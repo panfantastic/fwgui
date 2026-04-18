@@ -1,0 +1,23 @@
+{
+  "name": "fwgui-assets",
+  "version": "1.0.0",
+  "description": "JS asset manifest for fwgui. Run build.sh to regenerate static/cm-bundle.js.",
+  "private": true,
+  "dependencies": {
+    "codemirror": "6.0.2",
+    "@codemirror/autocomplete": "6.20.1",
+    "@codemirror/commands": "6.10.3",
+    "@codemirror/language": "6.12.3",
+    "@codemirror/lint": "6.9.5",
+    "@codemirror/search": "6.6.0",
+    "@codemirror/state": "6.6.0",
+    "@codemirror/view": "6.41.1",
+    "@lezer/common": "1.5.2",
+    "@lezer/highlight": "1.2.3",
+    "@lezer/lr": "1.4.10",
+    "@replit/codemirror-vim": "6.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}
