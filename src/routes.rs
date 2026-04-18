@@ -231,6 +231,8 @@ fn page(body: &str) -> String {
   #editor .cm-editor {{ height: 100%; }}
   #editor .cm-scroller {{ overflow: auto; }}
   .cm-err-line {{ background: #fdd !important; }}
+  .cm-line.cm-diff-add {{ background: rgba(34,134,58,.12) !important; }}
+  .cm-diff-del {{ display: block; height: 3px; background: #cb2431; border-radius: 1px; margin: 1px 0; }}
 </style>
 {diff_js}
 </head>
@@ -318,8 +320,6 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>) -> String {
   </div>
   <div id="validate-result"></div>
 </form>
-<h3>Changes from live ruleset</h3>
-<div class="diff-view" id="diff-view"><span class="d-none">Edit the ruleset above to see changes.</span></div>
 {script}"#
     )
 }
@@ -390,14 +390,34 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 fn editing_script(live_js: &str) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, EditorState, StateEffect, StateField, vim } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, EditorState, StateEffect, StateField, vim } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
-    s.push_str("  var diffEl = document.getElementById('diff-view');\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
     s.push_str("  var valOut = document.getElementById('validate-result');\n");
 
-    // StateField that holds error-line decorations.
+    // Widget for deleted-line markers (thin red bar shown between lines).
+    s.push_str("  class DiffDelWidget extends WidgetType {\n");
+    s.push_str("    toDOM() { var d = document.createElement('div'); d.className = 'cm-diff-del'; return d; }\n");
+    s.push_str("    eq(other) { return other instanceof DiffDelWidget; }\n");
+    s.push_str("    get estimatedHeight() { return 3; }\n");
+    s.push_str("  }\n");
+
+    // StateField for inline diff decorations (added lines + deletion markers).
+    s.push_str("  var diffEffect = StateEffect.define();\n");
+    s.push_str("  var diffField = StateField.define({\n");
+    s.push_str("    create: function() { return Decoration.none; },\n");
+    s.push_str("    update: function(deco, tr) {\n");
+    s.push_str("      deco = deco.map(tr.changes);\n");
+    s.push_str("      for (var i = 0; i < tr.effects.length; i++) {\n");
+    s.push_str("        if (tr.effects[i].is(diffEffect)) deco = tr.effects[i].value;\n");
+    s.push_str("      }\n");
+    s.push_str("      return deco;\n");
+    s.push_str("    },\n");
+    s.push_str("    provide: function(f) { return EditorView.decorations.from(f); }\n");
+    s.push_str("  });\n");
+
+    // StateField for error-line decorations.
     s.push_str("  var errEffect = StateEffect.define();\n");
     s.push_str("  var errField = StateField.define({\n");
     s.push_str("    create: function() { return Decoration.none; },\n");
@@ -410,6 +430,28 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("    },\n");
     s.push_str("    provide: function(f) { return EditorView.decorations.from(f); }\n");
     s.push_str("  });\n");
+
+    // Compute and apply inline diff decorations against the live original.
+    s.push_str("  function updateInlineDiff(v) {\n");
+    s.push_str("    var ops = window.computeDiff(original, v.state.doc.toString());\n");
+    s.push_str("    var decos = [], docLine = 1;\n");
+    s.push_str("    for (var i = 0; i < ops.length; i++) {\n");
+    s.push_str("      var op = ops[i];\n");
+    s.push_str("      if (op.t === '=') {\n");
+    s.push_str("        docLine++;\n");
+    s.push_str("      } else if (op.t === '+') {\n");
+    s.push_str("        if (docLine <= v.state.doc.lines) {\n");
+    s.push_str("          var ln = v.state.doc.line(docLine);\n");
+    s.push_str("          decos.push(Decoration.line({ class: 'cm-diff-add' }).range(ln.from));\n");
+    s.push_str("        }\n");
+    s.push_str("        docLine++;\n");
+    s.push_str("      } else {\n"); // '-': deleted from original, show red bar before docLine
+    s.push_str("        var pos = docLine <= v.state.doc.lines ? v.state.doc.line(docLine).from : v.state.doc.length;\n");
+    s.push_str("        decos.push(Decoration.widget({ widget: new DiffDelWidget(), block: true, side: -1 }).range(pos));\n");
+    s.push_str("      }\n");
+    s.push_str("    }\n");
+    s.push_str("    v.dispatch({ effects: diffEffect.of(Decoration.set(decos, true)) });\n");
+    s.push_str("  }\n");
 
     // Restore draft if returning after a failed stage POST.
     s.push_str("  var initialContent = original;\n");
@@ -425,18 +467,18 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("      extensions: [\n");
     s.push_str("        vim(),\n");
     s.push_str("        basicSetup,\n");
+    s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
-    s.push_str("          if (update.docChanged)\n");
-    s.push_str("            window.renderDiff(window.computeDiff(original, update.state.doc.toString()), diffEl);\n");
+    s.push_str("          if (update.docChanged) updateInlineDiff(update.view);\n");
     s.push_str("        }),\n");
     s.push_str("      ]\n");
     s.push_str("    }),\n");
     s.push_str("    parent: document.getElementById('editor')\n");
     s.push_str("  });\n");
 
-    // Render initial diff.
-    s.push_str("  window.renderDiff(window.computeDiff(original, view.state.doc.toString()), diffEl);\n");
+    // Apply initial diff decorations.
+    s.push_str("  updateInlineDiff(view);\n");
 
     // Parse nft caret-format error output → 0-indexed line numbers.
     s.push_str("  function getErrorLines(errText, docText) {\n");
