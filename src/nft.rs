@@ -95,6 +95,49 @@ pub fn restore(previous_text: &str) -> Result<(), NftError> {
     run_script(&script)
 }
 
+/// Read the saved nftables config file.
+pub fn read_saved_config(path: &str) -> Result<String, NftError> {
+    std::fs::read_to_string(path).map_err(NftError::Io)
+}
+
+/// Write content to the saved config, backing up the previous file first.
+pub fn write_saved_config(path: &str, content: &str, backup_dir: &str) -> Result<(), NftError> {
+    let config_path = std::path::Path::new(path);
+    if config_path.exists() {
+        std::fs::create_dir_all(backup_dir)?;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let stamp = unix_to_stamp(secs);
+        let backup = std::path::Path::new(backup_dir).join(format!("nftables.conf.{stamp}"));
+        std::fs::copy(config_path, backup)?;
+    }
+    std::fs::write(config_path, content.replace("\r\n", "\n")).map_err(NftError::Io)
+}
+
+fn unix_to_stamp(secs: u64) -> String {
+    let (h, m, s) = (secs % 86400 / 3600, secs % 3600 / 60, secs % 60);
+    let mut year = 1970u64;
+    let mut rem = secs / 86400;
+    loop {
+        let dy = if leap(year) { 366 } else { 365 };
+        if rem < dy { break; }
+        rem -= dy;
+        year += 1;
+    }
+    let mdays = [31u64, if leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u64;
+    for dm in mdays {
+        if rem < dm { break; }
+        rem -= dm;
+        month += 1;
+    }
+    format!("{year:04}-{month:02}-{:02}T{h:02}-{m:02}-{s:02}", rem + 1)
+}
+
+fn leap(y: u64) -> bool { (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
+
 /// Network interfaces from /sys/class/net, sorted.
 pub fn get_interfaces() -> Vec<String> {
     let mut ifaces: Vec<String> = std::fs::read_dir("/sys/class/net")

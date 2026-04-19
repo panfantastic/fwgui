@@ -32,6 +32,7 @@ async fn main() {
         .route("/acknowledge", post(routes::acknowledge))
         .route("/clear", post(routes::clear))
         .route("/validate", post(routes::validate))
+        .route("/save-config", post(routes::save_config))
         .with_state(app_state);
 
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();

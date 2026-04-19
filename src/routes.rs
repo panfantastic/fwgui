@@ -18,10 +18,19 @@ struct SidebarData {
     sets: Vec<String>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum EditMode { Running, Saved }
+
 #[derive(Deserialize)]
 pub struct IndexQuery {
     error: Option<String>,
     notice: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SaveConfigForm {
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +65,8 @@ pub async fn index(
     State(state): State<Arc<AppState>>,
     Query(q): Query<IndexQuery>,
 ) -> Html<String> {
+    let edit_mode = if q.mode.as_deref() == Some("saved") { EditMode::Saved } else { EditMode::Running };
+
     let (live_text, live_error) = match nft::get_ruleset_text() {
         Ok(t) => (t, None),
         Err(e) => (String::new(), Some(e.to_string())),
@@ -64,12 +75,19 @@ pub async fn index(
     let fw = state.fw.lock().unwrap();
     let body = match &*fw {
         FwState::Idle => {
+            let (edit_text, edit_error) = match edit_mode {
+                EditMode::Running => (live_text.clone(), live_error.clone()),
+                EditMode::Saved => match nft::read_saved_config(&state.config.saved_config_path) {
+                    Ok(t) => (t, None),
+                    Err(e) => (String::new(), Some(e.to_string())),
+                },
+            };
             let sidebar = SidebarData {
                 interfaces: nft::get_interfaces(),
-                defines: nft::parse_defines(&live_text),
-                sets: nft::parse_sets(&live_text),
+                defines: nft::parse_defines(&edit_text),
+                sets: nft::parse_sets(&edit_text),
             };
-            render_editing(&live_text, live_error.as_deref(), &sidebar)
+            render_editing(&edit_text, edit_error.as_deref(), &sidebar, edit_mode, &state.config.saved_config_path)
         }
         FwState::Staged(change) => render_staged(change, &live_text),
         FwState::Promoting { change, deadline, previous_text, .. } => {
@@ -201,6 +219,26 @@ pub async fn clear(State(state): State<Arc<AppState>>) -> Redirect {
     }
 }
 
+pub async fn save_config(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<SaveConfigForm>,
+) -> Redirect {
+    if form.content.trim().is_empty() {
+        return Redirect::to("/?mode=saved&error=Content+cannot+be+empty");
+    }
+    match nft::write_saved_config(
+        &state.config.saved_config_path,
+        &form.content,
+        &state.config.backup_dir,
+    ) {
+        Ok(()) => Redirect::to("/?mode=saved&notice=Config+saved+to+disk"),
+        Err(e) => Redirect::to(&format!(
+            "/?mode=saved&error={}",
+            url_encode(&format!("Save failed: {e}"))
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Page rendering
 // ---------------------------------------------------------------------------
@@ -245,6 +283,11 @@ fn page(body: &str) -> String {
   #countdown {{ font-size: 1.6em; font-weight: bold; color: #b00; }}
   #validate-result {{ margin-top: .5em; min-height: 1.5em; }}
   .actions {{ margin-top: .75em; }}
+  .mode-tabs {{ display: flex; margin-bottom: 1em; border-bottom: 2px solid #ccc; }}
+  .tab-btn {{ padding: .4em 1.2em; text-decoration: none; color: #555; border: 1px solid transparent;
+              border-bottom: none; margin-bottom: -2px; border-radius: 3px 3px 0 0; }}
+  .tab-btn.active {{ color: #000; background: #fff; border-color: #ccc; border-bottom-color: #fff; font-weight: bold; }}
+  .tab-btn:hover:not(.active) {{ background: #f0f0f0; color: #333; }}
   .editor-layout {{ display: grid; grid-template-columns: 1fr 220px; gap: 1em; align-items: start; }}
   .sidebar {{ border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
               font-size: .85em; position: sticky; top: 1em; }}
@@ -352,20 +395,44 @@ function renderDiff(ops, el) {
 
 
 
-fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarData) -> String {
+fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarData, mode: EditMode, saved_path: &str) -> String {
     let error_html = fetch_error
-        .map(|e| format!("<div class='msg error'>Could not load live ruleset: {}</div>", he(e)))
+        .map(|e| format!("<div class='msg error'>{}</div>", he(e)))
         .unwrap_or_default();
     let live_js = js_str(live_text);
-    let script = editing_script(&live_js);
+    let script = editing_script(&live_js, mode == EditMode::Saved);
     let sidebar_html = render_sidebar(sidebar);
 
+    let (run_cls, sav_cls) = if mode == EditMode::Running {
+        ("tab-btn active", "tab-btn")
+    } else {
+        ("tab-btn", "tab-btn active")
+    };
+
+    let heading = match mode {
+        EditMode::Running => "Edit Ruleset — Running config".to_string(),
+        EditMode::Saved => format!("Edit Ruleset — Saved config ({})", he(saved_path)),
+    };
+
+    let save_form = if mode == EditMode::Saved {
+        r#"<form id="save-form" method="post" action="/save-config" style="display:inline;margin-left:.25em">
+  <input type="hidden" id="save-content" name="content">
+  <button type="submit" class="btn-neutral">Save to disk</button>
+</form>"#
+    } else {
+        ""
+    };
+
     format!(
-        r#"<div class="editor-layout">
+        r#"<div class="mode-tabs">
+  <a href="/" class="{run_cls}">Running config</a>
+  <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
+</div>
+<div class="editor-layout">
 <div>
-{error_html}<h2>Edit Ruleset</h2>
+{error_html}<h2>{heading}</h2>
 <form method="post" action="/stage" id="stage-form">
-  <label for="mode-sel">Mode:</label>
+  <label for="mode-sel">Stage mode:</label>
   <select id="mode-sel" name="mode">
     <option value="full">Full replacement</option>
     <option value="patch">Patch (incremental)</option>
@@ -378,6 +445,7 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
   </div>
   <div id="validate-result"></div>
 </form>
+{save_form}
 </div>
 {sidebar_html}
 </div>
@@ -504,7 +572,7 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 // Script builders — concatenation avoids format! brace-escaping for JS code.
 // ---------------------------------------------------------------------------
 
-fn editing_script(live_js: &str) -> String {
+fn editing_script(live_js: &str, has_save_form: bool) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
     s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, foldService, vim } from '/static/cm-bundle.js';\n");
@@ -739,6 +807,12 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("    sessionStorage.setItem('fwgui_draft', content);\n");
     s.push_str("    document.getElementById('content-hidden').value = content;\n");
     s.push_str("  });\n");
+
+    if has_save_form {
+        s.push_str("  document.getElementById('save-form').addEventListener('submit', function() {\n");
+        s.push_str("    document.getElementById('save-content').value = view.state.doc.toString();\n");
+        s.push_str("  });\n");
+    }
 
     // Validate button.
     s.push_str("  valBtn.addEventListener('click', function() {\n");

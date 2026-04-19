@@ -5,6 +5,8 @@ use tokio::sync::oneshot;
 pub struct Config {
     pub port: u16,
     pub rollback_secs: u64,
+    pub saved_config_path: String,
+    pub backup_dir: String,
 }
 
 impl Config {
@@ -18,6 +20,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            saved_config_path: std::env::var("NFT_CONFIG_PATH")
+                .unwrap_or_else(|_| "/etc/nftables.conf".to_string()),
+            backup_dir: std::env::var("NFT_BACKUP_DIR")
+                .unwrap_or_else(|_| "/etc/nftables.bak".to_string()),
         }
     }
 }
