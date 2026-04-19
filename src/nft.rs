@@ -95,6 +95,45 @@ pub fn restore(previous_text: &str) -> Result<(), NftError> {
     run_script(&script)
 }
 
+/// Network interfaces from /sys/class/net, sorted.
+pub fn get_interfaces() -> Vec<String> {
+    let mut ifaces: Vec<String> = std::fs::read_dir("/sys/class/net")
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+              .map(|e| e.file_name().to_string_lossy().into_owned())
+              .collect()
+        })
+        .unwrap_or_default();
+    ifaces.sort();
+    ifaces
+}
+
+/// Extract `define NAME = VALUE` declarations from ruleset text.
+pub fn parse_defines(ruleset: &str) -> Vec<(String, String)> {
+    ruleset
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            let rest = t.strip_prefix("define ")?;
+            let (name, val) = rest.split_once(" = ")?;
+            Some((name.trim().to_string(), val.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Extract set names from ruleset text.
+pub fn parse_sets(ruleset: &str) -> Vec<String> {
+    ruleset
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            let rest = t.strip_prefix("set ")?;
+            let name = rest.trim_end_matches(|c: char| c == '{' || c.is_ascii_whitespace());
+            if name.is_empty() { None } else { Some(name.to_string()) }
+        })
+        .collect()
+}
+
 fn run_script(content: &str) -> Result<(), NftError> {
     let mut f = NamedTempFile::new()?;
     f.write_all(content.replace("\r\n", "\n").as_bytes())?;

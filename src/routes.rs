@@ -12,6 +12,12 @@ use tokio::sync::oneshot;
 use crate::nft;
 use crate::state::{AppState, ChangeMode, FwState, StagedChange};
 
+struct SidebarData {
+    interfaces: Vec<String>,
+    defines: Vec<(String, String)>,
+    sets: Vec<String>,
+}
+
 #[derive(Deserialize)]
 pub struct IndexQuery {
     error: Option<String>,
@@ -57,7 +63,14 @@ pub async fn index(
 
     let fw = state.fw.lock().unwrap();
     let body = match &*fw {
-        FwState::Idle => render_editing(&live_text, live_error.as_deref()),
+        FwState::Idle => {
+            let sidebar = SidebarData {
+                interfaces: nft::get_interfaces(),
+                defines: nft::parse_defines(&live_text),
+                sets: nft::parse_sets(&live_text),
+            };
+            render_editing(&live_text, live_error.as_deref(), &sidebar)
+        }
         FwState::Staged(change) => render_staged(change, &live_text),
         FwState::Promoting { change, deadline, previous_text, .. } => {
             render_promoting(change, previous_text, deadline.saturating_duration_since(Instant::now()))
@@ -232,7 +245,22 @@ fn page(body: &str) -> String {
   #countdown {{ font-size: 1.6em; font-weight: bold; color: #b00; }}
   #validate-result {{ margin-top: .5em; min-height: 1.5em; }}
   .actions {{ margin-top: .75em; }}
-  #editor {{ height: 320px; border: 1px solid #ccc; border-radius: 2px; font-size: .9em; }}
+  .editor-layout {{ display: grid; grid-template-columns: 1fr 220px; gap: 1em; align-items: start; }}
+  .sidebar {{ border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
+              font-size: .85em; position: sticky; top: 1em; }}
+  .sidebar h4 {{ margin: .4em 0 .2em; color: #333; border-bottom: 1px solid #eee;
+                 padding-bottom: .1em; font-size: .95em; }}
+  .sidebar ul {{ margin: .2em 0; padding: 0 0 0 .75em; }}
+  .sidebar li {{ padding: .1em 0; }}
+  .sb-item {{ background: none; border: none; padding: 0; cursor: pointer; color: #0969da;
+               font-family: monospace; font-size: 1em; text-align: left; }}
+  .sb-item:hover {{ text-decoration: underline; }}
+  .sb-empty {{ color: #aaa; font-style: italic; margin: .2em 0; }}
+  .cm-tooltip {{ z-index: 100; }}
+  .nft-tooltip {{ background: #1e293b; color: #f1f5f9; border-radius: 4px; padding: .4em .65em;
+                  font-size: .82em; max-width: 300px; line-height: 1.4; }}
+  .nft-tooltip strong {{ color: #7dd3fc; }}
+  #editor {{ height: 420px; border: 1px solid #ccc; border-radius: 2px; font-size: .9em; }}
   #editor .cm-editor {{ height: 100%; }}
   #editor .cm-scroller {{ overflow: auto; }}
   .cm-err-line {{ background: #fdd !important; }}
@@ -324,16 +352,18 @@ function renderDiff(ops, el) {
 
 
 
-fn render_editing(live_text: &str, fetch_error: Option<&str>) -> String {
+fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarData) -> String {
     let error_html = fetch_error
         .map(|e| format!("<div class='msg error'>Could not load live ruleset: {}</div>", he(e)))
         .unwrap_or_default();
     let live_js = js_str(live_text);
-
     let script = editing_script(&live_js);
+    let sidebar_html = render_sidebar(sidebar);
 
     format!(
-        r#"{error_html}<h2>Edit Ruleset</h2>
+        r#"<div class="editor-layout">
+<div>
+{error_html}<h2>Edit Ruleset</h2>
 <form method="post" action="/stage" id="stage-form">
   <label for="mode-sel">Mode:</label>
   <select id="mode-sel" name="mode">
@@ -348,8 +378,67 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>) -> String {
   </div>
   <div id="validate-result"></div>
 </form>
+</div>
+{sidebar_html}
+</div>
 {script}"#
     )
+}
+
+fn render_sidebar(sidebar: &SidebarData) -> String {
+    let mut h = String::from("<aside class=\"sidebar\">\n");
+
+    h.push_str("<h4>Interfaces</h4><ul>\n");
+    if sidebar.interfaces.is_empty() {
+        h.push_str("<li class=\"sb-empty\">None found</li>\n");
+    } else {
+        for iface in &sidebar.interfaces {
+            h.push_str(&format!(
+                "<li><button type=\"button\" class=\"sb-item\" onclick=\"window.fwInsert({ins})\">{name}</button></li>\n",
+                ins = js_str(&format!("\"{iface}\"")),
+                name = he(iface),
+            ));
+        }
+    }
+    h.push_str("</ul>\n");
+
+    h.push_str("<h4>Defines</h4><ul>\n");
+    if sidebar.defines.is_empty() {
+        h.push_str("<li class=\"sb-empty\">None</li>\n");
+    } else {
+        for (name, val) in &sidebar.defines {
+            h.push_str(&format!(
+                "<li><button type=\"button\" class=\"sb-item\" onclick=\"window.fwInsert({ins})\" title=\"{val}\">${name}</button></li>\n",
+                ins = js_str(&format!("${name}")),
+                val = he(val),
+                name = he(name),
+            ));
+        }
+    }
+    h.push_str("</ul>\n");
+
+    h.push_str("<h4>Sets</h4><ul>\n");
+    if sidebar.sets.is_empty() {
+        h.push_str("<li class=\"sb-empty\">None</li>\n");
+    } else {
+        for set_name in &sidebar.sets {
+            let insert = format!("@{set_name}");
+            h.push_str(&format!(
+                "<li><button type=\"button\" class=\"sb-item\" onclick=\"window.fwInsert({ins})\">{name}</button></li>\n",
+                ins = js_str(&insert),
+                name = he(&insert),
+            ));
+        }
+    }
+    h.push_str("</ul>\n");
+
+    h.push_str("<h4>Help</h4>\n<ul style=\"list-style:none;padding:0;margin:.25em 0\">\n");
+    h.push_str("  <li><a href=\"https://wiki.nftables.org/\" target=\"_blank\" rel=\"noopener noreferrer\">nftables wiki \u{2197}</a></li>\n");
+    h.push_str("  <li style=\"margin-top:.4em\"><button type=\"button\" class=\"btn-neutral\" id=\"help-toggle\" style=\"font-size:.85em;padding:.2em .5em\">Keyword help: off</button></li>\n");
+    h.push_str("</ul>\n");
+
+    h.push_str("</aside>\n");
+    h
 }
 
 fn render_staged(change: &StagedChange, live_text: &str) -> String {
@@ -418,7 +507,7 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 fn editing_script(live_js: &str) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, EditorState, StateEffect, StateField, foldService, vim } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, EditorState, StateEffect, StateField, Compartment, foldService, vim } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
@@ -488,6 +577,73 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("    if (draft !== null) { sessionStorage.removeItem('fwgui_draft'); initialContent = draft; }\n");
     s.push_str("  }\n");
 
+    // nftables keyword help dictionary + hoverTooltip.
+    s.push_str("  var NFT_HELP = {\n");
+    s.push_str("    'table':    'Container for chains/sets/maps. Families: ip ip6 inet arp bridge netdev.',\n");
+    s.push_str("    'chain':    'Ordered rules list. Base chains need hook, priority and policy; regular chains are jump targets.',\n");
+    s.push_str("    'rule':     'A single match-and-action statement inside a chain.',\n");
+    s.push_str("    'set':      'Named collection of addresses, ports, or other values for efficient matching.',\n");
+    s.push_str("    'map':      'Named key→value store for lookups inside rules.',\n");
+    s.push_str("    'hook':     'Netfilter attachment: prerouting input forward output postrouting ingress egress.',\n");
+    s.push_str("    'policy':   'Default chain verdict when no rule matches: accept or drop.',\n");
+    s.push_str("    'priority': 'Controls processing order when multiple chains share a hook. Lower runs first.',\n");
+    s.push_str("    'type':     'Chain type: filter nat route. Or set/map element type.',\n");
+    s.push_str("    'accept':   'Verdict: allow the packet to continue through the stack.',\n");
+    s.push_str("    'drop':     'Verdict: silently discard the packet.',\n");
+    s.push_str("    'reject':   'Verdict: discard and send an error reply (ICMP unreachable or TCP RST).',\n");
+    s.push_str("    'return':   'Verdict: stop processing this chain and return to the calling chain.',\n");
+    s.push_str("    'jump':     'Verdict: process the named chain then return here.',\n");
+    s.push_str("    'goto':     'Verdict: process the named chain without returning.',\n");
+    s.push_str("    'iifname':  'Match on incoming interface name (string). Slower than iif but handles dynamic interfaces.',\n");
+    s.push_str("    'oifname':  'Match on outgoing interface name (string). Slower than oif but handles dynamic interfaces.',\n");
+    s.push_str("    'iif':      'Match on incoming interface index (integer). Faster than iifname.',\n");
+    s.push_str("    'oif':      'Match on outgoing interface index (integer). Faster than oifname.',\n");
+    s.push_str("    'saddr':    'Match on source IP address or prefix.',\n");
+    s.push_str("    'daddr':    'Match on destination IP address or prefix.',\n");
+    s.push_str("    'sport':    'Match on source port number or range.',\n");
+    s.push_str("    'dport':    'Match on destination port number or range.',\n");
+    s.push_str("    'ct':       'Connection tracking. ct state: new established related invalid untracked.',\n");
+    s.push_str("    'state':    'ct state values: new established related invalid untracked.',\n");
+    s.push_str("    'ip':       'IPv4 header fields, or the ip table family.',\n");
+    s.push_str("    'ip6':      'IPv6 header fields, or the ip6 table family.',\n");
+    s.push_str("    'inet':     'Dual-stack family covering both IPv4 and IPv6 in one table.',\n");
+    s.push_str("    'tcp':      'TCP protocol fields: flags dport sport sequence ack-seq window.',\n");
+    s.push_str("    'udp':      'UDP protocol fields: sport dport length checksum.',\n");
+    s.push_str("    'icmp':     'ICMPv4 fields: type code id sequence.',\n");
+    s.push_str("    'icmpv6':   'ICMPv6 fields: type code.',\n");
+    s.push_str("    'counter':  'Counts matching packets and bytes. Attach to any rule.',\n");
+    s.push_str("    'log':      'Log matching packets to the kernel log (dmesg/journald). Options: prefix level group.',\n");
+    s.push_str("    'limit':    'Rate-limit: limit rate N/second burst M packets.',\n");
+    s.push_str("    'masquerade': 'NAT: rewrite source address to the outgoing interface address (for dynamic IPs).',\n");
+    s.push_str("    'snat':     'Source NAT: rewrite source to a fixed address. to <addr>.',\n");
+    s.push_str("    'dnat':     'Destination NAT: redirect to a fixed address. to <addr>[:<port>].',\n");
+    s.push_str("    'define':   'Assign a symbolic name to a value: define NAME = value. Reference as $NAME.',\n");
+    s.push_str("    'flush':    'Remove all rules/elements: flush ruleset|table|chain|set <name>.',\n");
+    s.push_str("    'delete':   'Remove a specific named object from the ruleset.',\n");
+    s.push_str("    'add':      'Add a table, chain, rule, or set element.',\n");
+    s.push_str("    'insert':   'Insert a rule at the front of a chain.',\n");
+    s.push_str("    'replace':  'Replace an existing rule identified by handle number.',\n");
+    s.push_str("  };\n");
+    s.push_str("  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\n");
+    s.push_str("  var kwHelp = hoverTooltip(function(view, pos) {\n");
+    s.push_str("    var line = view.state.doc.lineAt(pos);\n");
+    s.push_str("    var text = line.text, off = pos - line.from;\n");
+    s.push_str("    var start = off, end = off;\n");
+    s.push_str("    while (start > 0 && /\\w/.test(text[start - 1])) start--;\n");
+    s.push_str("    while (end < text.length && /\\w/.test(text[end])) end++;\n");
+    s.push_str("    if (start === end) return null;\n");
+    s.push_str("    var word = text.slice(start, end);\n");
+    s.push_str("    var tip = NFT_HELP[word];\n");
+    s.push_str("    if (!tip) return null;\n");
+    s.push_str("    return { pos: line.from + start, end: line.from + end, above: true, create: function() {\n");
+    s.push_str("      var d = document.createElement('div');\n");
+    s.push_str("      d.className = 'nft-tooltip';\n");
+    s.push_str("      d.innerHTML = '<strong>' + esc(word) + '</strong>: ' + esc(tip);\n");
+    s.push_str("      return { dom: d };\n");
+    s.push_str("    }};\n");
+    s.push_str("  });\n");
+    s.push_str("  var helpComp = new Compartment();\n");
+
     // Brace-based fold service for nftables { } blocks.
     s.push_str("  var nftFold = foldService.of(function(state, lineFrom, lineTo) {\n");
     s.push_str("    var lineText = state.sliceDoc(lineFrom, lineTo);\n");
@@ -514,6 +670,7 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("        vim(),\n");
     s.push_str("        basicSetup,\n");
     s.push_str("        nftFold,\n");
+    s.push_str("        helpComp.of([]),\n");
     s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
@@ -526,6 +683,23 @@ fn editing_script(live_js: &str) -> String {
 
     // Apply initial diff decorations.
     s.push_str("  updateInlineDiff(view);\n");
+
+    // Expose insert helper for sidebar click handlers.
+    s.push_str("  window.fwInsert = function(text) {\n");
+    s.push_str("    view.dispatch(view.state.replaceSelection(text));\n");
+    s.push_str("    view.focus();\n");
+    s.push_str("  };\n");
+
+    // Keyword help toggle.
+    s.push_str("  var helpBtn = document.getElementById('help-toggle');\n");
+    s.push_str("  if (helpBtn) {\n");
+    s.push_str("    var helpOn = false;\n");
+    s.push_str("    helpBtn.addEventListener('click', function() {\n");
+    s.push_str("      helpOn = !helpOn;\n");
+    s.push_str("      helpBtn.textContent = 'Keyword help: ' + (helpOn ? 'on' : 'off');\n");
+    s.push_str("      view.dispatch({ effects: helpComp.reconfigure(helpOn ? [kwHelp] : []) });\n");
+    s.push_str("    });\n");
+    s.push_str("  }\n");
 
     // Parse nft caret-format error output → 0-indexed line numbers.
     s.push_str("  function getErrorLines(errText, docText) {\n");
