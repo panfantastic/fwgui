@@ -1010,9 +1010,12 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("      logToggle.textContent = 'Monitor: off';\n");
         s.push_str("    } else {\n");
         s.push_str("      evtSource = new EventSource('/log-stream');\n");
+        s.push_str("      var LOG_MAX = 500;\n");
         s.push_str("      evtSource.onmessage = function(e) {\n");
         s.push_str("        var d = document.createElement('div'); d.className = 'log-line'; d.textContent = e.data;\n");
-        s.push_str("        logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;\n");
+        s.push_str("        logEl.appendChild(d);\n");
+        s.push_str("        while (logEl.childElementCount > LOG_MAX) logEl.removeChild(logEl.firstChild);\n");
+        s.push_str("        logEl.scrollTop = logEl.scrollHeight;\n");
         s.push_str("      };\n");
         s.push_str("      evtSource.onerror = function() {\n");
         s.push_str("        logToggle.textContent = 'Monitor: off';\n");
