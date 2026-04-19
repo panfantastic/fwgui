@@ -112,3 +112,27 @@ Running config mode only. Breakpoints are ephemeral — they inject log statemen
 * only packets matching the breakpointed rule's criteria should appear in the log output
 * clearing a breakpoint must stop log output for that rule
 
+## v0.7
+
+Improvement of UI now the core feature set is implemented and working.
+
+* Monitor auto-start
+    - Setting a breakpoint should automatically start the monitor **if no other breakpoints are currently active** (i.e. only on the first breakpoint)
+    - If the user has manually stopped the monitor, setting additional breakpoints should not restart it
+
+* Monitor tab
+    - Add a "Monitor" tab alongside the existing Running / Saved config tabs
+    - The tab gives the log output full viewport width for easier reading
+    - Where the log panel currently lives in running config mode, add a button to jump to the Monitor tab
+    - The Monitor tab is only meaningful in running config mode (breakpoints are running-mode only)
+
+* Readable log format
+    - Parse the nft/kernel log line format (`IN= OUT= SRC= DST= PROTO= SPT= DPT=` etc.) into a compact human-readable summary, e.g. `TCP 192.168.1.100:54321 → 10.0.0.1:22  [fwgui-bp-5]`
+    - `tshark` is an acceptable required or optional dependency if it significantly improves parse quality
+    - If `tshark` is present, use it for deeper packet decode; fall back to regex parsing of the nft log fields if not
+
+* Reload / restart recovery
+    - On **browser reload**, active breakpoints are preserved in the server's in-memory state; `syncBreakpoints()` restores gutter markers and the monitor should auto-restart if breakpoints are active
+    - On **server restart**, scan `nft -a list ruleset` at startup for rules containing `fwgui-bp-` and remove them (insert+delete) to clean up stale injected log statements
+    - Server-side persistent state (e.g. a state file) is acceptable if it simplifies recovery
+
