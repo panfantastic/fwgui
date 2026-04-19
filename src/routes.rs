@@ -224,6 +224,7 @@ fn page(body: &str) -> String {
   .d-del {{ background: #ffeef0; color: #cb2431; }}
   .d-eq  {{ color: #999; }}
   .d-none {{ color: #aaa; font-style: italic; padding: .5em 1em; }}
+  .d-sep  {{ color: #bbb; padding: 0 1em; display: block; user-select: none; }}
   #countdown {{ font-size: 1.6em; font-weight: bold; color: #b00; }}
   #validate-result {{ margin-top: .5em; min-height: 1.5em; }}
   .actions {{ margin-top: .75em; }}
@@ -291,6 +292,35 @@ function renderDiff(ops, el) {
         if (op.t === '-') return '<span class="d-del">- ' + e + '</span>';
         return '<span class="d-eq">  ' + e + '</span>';
     }).join('');
+}
+
+// Like renderDiff but omits unchanged lines, inserting a separator between
+// distinct change groups so position in the file remains clear.
+function renderDiffChanged(ops, el) {
+    var changed = ops.some(function(o) { return o.t !== '='; });
+    if (ops.length === 0 || !changed) {
+        el.innerHTML = '<span class="d-none">No changes.</span>';
+        return;
+    }
+    var html = '', inChange = false;
+    for (var i = 0; i < ops.length; i++) {
+        var op = ops[i];
+        if (op.t === '=') {
+            if (inChange) {
+                // Only emit separator if more changes follow.
+                var more = false;
+                for (var j = i + 1; j < ops.length; j++) { if (ops[j].t !== '=') { more = true; break; } }
+                if (more) html += '<span class="d-sep">\u00b7\u00b7\u00b7</span>';
+            }
+            inChange = false;
+        } else {
+            var e = escHtml(op.l);
+            html += op.t === '+' ? '<span class="d-add">+ ' + e + '</span>'
+                                 : '<span class="d-del">- ' + e + '</span>';
+            inChange = true;
+        }
+    }
+    el.innerHTML = html;
 }
 </script>"#;
 
@@ -555,7 +585,7 @@ fn simple_diff_script(a_js: &str, b_js: &str) -> String {
     let mut s = String::from("<script>\n(function() {\n");
     s.push_str("  var a = "); s.push_str(a_js); s.push_str(";\n");
     s.push_str("  var b = "); s.push_str(b_js); s.push_str(";\n");
-    s.push_str("  renderDiff(computeDiff(a, b), document.getElementById('diff-view'));\n");
+    s.push_str("  renderDiffChanged(computeDiff(a, b), document.getElementById('diff-view'));\n");
     s.push_str("})();\n</script>");
     s
 }
