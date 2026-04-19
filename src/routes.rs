@@ -258,9 +258,10 @@ function lcsTable(a, b) {
     return c;
 }
 
+function normLine(l) { return l.replace(/\t/g, '    ').replace(/\s+$/, ''); }
 function computeDiff(origText, editText) {
-    var a = origText === '' ? [] : origText.split('\n');
-    var b = editText === '' ? [] : editText.split('\n');
+    var a = origText === '' ? [] : origText.split('\n').map(normLine);
+    var b = editText === '' ? [] : editText.split('\n').map(normLine);
     var c = lcsTable(a, b);
     var ops = [];
     var i = a.length, j = b.length;
