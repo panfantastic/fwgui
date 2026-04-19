@@ -114,20 +114,21 @@ pub async fn stage(
         return redirect_error("Content cannot be empty");
     }
 
-    // saved_incremental: build a per-table patch; other modes use content verbatim.
-    let (mode, content) = if form.mode == "saved_incremental" {
-        let patch = nft::build_saved_config_patch(&form.content);
+    // saved_incremental: build a per-table patch; keep original for disk write on acknowledge.
+    let (mode, content, saved_config) = if form.mode == "saved_incremental" {
+        let original = form.content;
+        let patch = nft::build_saved_config_patch(&original);
         if patch.trim().is_empty() {
             return redirect_error("No tables or defines found in saved config");
         }
-        (ChangeMode::Patch, patch)
+        (ChangeMode::Patch, patch, Some(original))
     } else {
         let m = match form.mode.as_str() {
             "full" => ChangeMode::Full,
             "patch" => ChangeMode::Patch,
             _ => return redirect_error("Invalid mode"),
         };
-        (m, form.content)
+        (m, form.content, None)
     };
 
     if let Err(e) = nft::validate_script(&content) {
@@ -137,7 +138,7 @@ pub async fn stage(
     if matches!(*fw, FwState::Promoting { .. }) {
         return redirect_error("Cannot stage a change while promotion is pending");
     }
-    *fw = FwState::Staged(StagedChange { mode, content });
+    *fw = FwState::Staged(StagedChange { mode, content, saved_config });
     redirect_notice("Change staged successfully")
 }
 
@@ -208,12 +209,30 @@ pub async fn acknowledge(State(state): State<Arc<AppState>>) -> Redirect {
         FwState::Promoting { .. } => {}
         _ => return redirect_error("Not in a promoting state"),
     }
-    let cancel_tx = match std::mem::replace(&mut *fw, FwState::Idle) {
-        FwState::Promoting { cancel_tx, .. } => cancel_tx,
+    let (cancel_tx, saved_config) = match std::mem::replace(&mut *fw, FwState::Idle) {
+        FwState::Promoting { cancel_tx, change, .. } => (cancel_tx, change.saved_config),
         _ => unreachable!(),
     };
     drop(fw);
     let _ = cancel_tx.send(());
+
+    if let Some(config) = saved_config {
+        match nft::write_saved_config(
+            &state.config.saved_config_path,
+            &config,
+            &state.config.backup_dir,
+        ) {
+            Ok(()) => return redirect_notice("Change acknowledged — config saved to disk"),
+            Err(e) => {
+                tracing::error!("disk save failed after acknowledge: {e}");
+                return Redirect::to(&format!(
+                    "/?error={}",
+                    url_encode(&format!("Change is live but disk save failed: {e}"))
+                ));
+            }
+        }
+    }
+
     redirect_notice("Change acknowledged — rollback cancelled")
 }
 

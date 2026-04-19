@@ -47,6 +47,9 @@ impl std::fmt::Display for ChangeMode {
 pub struct StagedChange {
     pub mode: ChangeMode,
     pub content: String,
+    /// Original saved config text to write to disk when the promotion is acknowledged.
+    /// None when staging from running config mode.
+    pub saved_config: Option<String>,
 }
 
 pub enum FwState {
