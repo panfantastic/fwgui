@@ -224,7 +224,11 @@ fn page(body: &str) -> String {
   .d-del {{ background: #ffeef0; color: #cb2431; }}
   .d-eq  {{ color: #999; }}
   .d-none {{ color: #aaa; font-style: italic; padding: .5em 1em; }}
-  .d-sep  {{ color: #bbb; padding: 0 1em; display: block; user-select: none; }}
+  .d-fold {{ margin: 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }}
+  .d-fold summary {{ display: block; padding: 2px 1em; cursor: pointer; color: #0969da;
+                     background: #f6f8fa; font-size: .85em; user-select: none; list-style: none; }}
+  .d-fold summary::-webkit-details-marker {{ display: none; }}
+  .d-fold[open] summary {{ border-bottom: 1px solid #eee; margin-bottom: 0; }}
   #countdown {{ font-size: 1.6em; font-weight: bold; color: #b00; }}
   #validate-result {{ margin-top: .5em; min-height: 1.5em; }}
   .actions {{ margin-top: .75em; }}
@@ -282,43 +286,36 @@ function escHtml(s) {
 }
 
 function renderDiff(ops, el) {
+    var CONTEXT = 3;
     var changed = ops.some(function(o) { return o.t !== '='; });
     if (ops.length === 0 || !changed) {
         el.innerHTML = '<span class="d-none">No changes.</span>';
         return;
     }
-    el.innerHTML = ops.map(function(op) {
-        var e = escHtml(op.l);
-        if (op.t === '+') return '<span class="d-add">+ ' + e + '</span>';
-        if (op.t === '-') return '<span class="d-del">- ' + e + '</span>';
-        return '<span class="d-eq">  ' + e + '</span>';
-    }).join('');
-}
-
-// Like renderDiff but omits unchanged lines, inserting a separator between
-// distinct change groups so position in the file remains clear.
-function renderDiffChanged(ops, el) {
-    var changed = ops.some(function(o) { return o.t !== '='; });
-    if (ops.length === 0 || !changed) {
-        el.innerHTML = '<span class="d-none">No changes.</span>';
-        return;
-    }
-    var html = '', inChange = false;
+    // Mark which lines should be shown inline vs collapsed.
+    var show = new Array(ops.length).fill(false);
     for (var i = 0; i < ops.length; i++) {
-        var op = ops[i];
-        if (op.t === '=') {
-            if (inChange) {
-                // Only emit separator if more changes follow.
-                var more = false;
-                for (var j = i + 1; j < ops.length; j++) { if (ops[j].t !== '=') { more = true; break; } }
-                if (more) html += '<span class="d-sep">\u00b7\u00b7\u00b7</span>';
-            }
-            inChange = false;
+        if (ops[i].t !== '=') {
+            var lo = Math.max(0, i - CONTEXT), hi = Math.min(ops.length - 1, i + CONTEXT);
+            for (var k = lo; k <= hi; k++) show[k] = true;
+        }
+    }
+    var html = '', i = 0;
+    while (i < ops.length) {
+        if (show[i]) {
+            var e = escHtml(ops[i].l);
+            if (ops[i].t === '+') html += '<span class="d-add">+ ' + e + '</span>';
+            else if (ops[i].t === '-') html += '<span class="d-del">- ' + e + '</span>';
+            else html += '<span class="d-eq">  ' + e + '</span>';
+            i++;
         } else {
-            var e = escHtml(op.l);
-            html += op.t === '+' ? '<span class="d-add">+ ' + e + '</span>'
-                                 : '<span class="d-del">- ' + e + '</span>';
-            inChange = true;
+            var j = i;
+            while (j < ops.length && !show[j]) j++;
+            var n = j - i;
+            html += '<details class="d-fold"><summary>' + n + ' unchanged line' + (n === 1 ? '' : 's') + '</summary>';
+            for (var k = i; k < j; k++) html += '<span class="d-eq">  ' + escHtml(ops[k].l) + '</span>';
+            html += '</details>';
+            i = j;
         }
     }
     el.innerHTML = html;
@@ -421,7 +418,7 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 fn editing_script(live_js: &str) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, EditorState, StateEffect, StateField, vim } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, EditorState, StateEffect, StateField, foldService, vim } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
@@ -491,6 +488,24 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("    if (draft !== null) { sessionStorage.removeItem('fwgui_draft'); initialContent = draft; }\n");
     s.push_str("  }\n");
 
+    // Brace-based fold service for nftables { } blocks.
+    s.push_str("  var nftFold = foldService.of(function(state, lineFrom, lineTo) {\n");
+    s.push_str("    var lineText = state.sliceDoc(lineFrom, lineTo);\n");
+    s.push_str("    var openIdx = lineText.lastIndexOf('{');\n");
+    s.push_str("    if (openIdx < 0) return null;\n");
+    s.push_str("    var openPos = lineFrom + openIdx;\n");
+    s.push_str("    var depth = 1, cur = openPos + 1;\n");
+    s.push_str("    while (cur < state.doc.length && depth > 0) {\n");
+    s.push_str("      var ch = state.sliceDoc(cur, cur + 1);\n");
+    s.push_str("      if (ch === '{') depth++;\n");
+    s.push_str("      else if (ch === '}') { depth--; if (depth === 0) break; }\n");
+    s.push_str("      cur++;\n");
+    s.push_str("    }\n");
+    s.push_str("    if (depth !== 0) return null;\n");
+    s.push_str("    var closeLine = state.doc.lineAt(cur);\n");
+    s.push_str("    return { from: openPos + 1, to: closeLine.from - 1 };\n");
+    s.push_str("  });\n");
+
     // Create the CodeMirror editor.
     s.push_str("  var view = new EditorView({\n");
     s.push_str("    state: EditorState.create({\n");
@@ -498,6 +513,7 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("      extensions: [\n");
     s.push_str("        vim(),\n");
     s.push_str("        basicSetup,\n");
+    s.push_str("        nftFold,\n");
     s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
