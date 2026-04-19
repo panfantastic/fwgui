@@ -525,47 +525,40 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         ""
     };
 
-    // The log container (controls + output) is a single div that gets moved
-    // between the narrow log-panel and the full-width monitor view by JS.
-    let (layout_cls, log_panel, monitor_tab_btn, monitor_view) = if mode == EditMode::Running {
+    // log-container lives inside log-panel-slot in the HTML (correct grid position).
+    // JS moves it into monitor-view when the Monitor tab is activated.
+    let (layout_cls, log_panel) = if mode == EditMode::Running {
         (
             "editor-layout editor-layout-bp",
             r#"<div class="log-panel" id="log-panel-slot">
 <h4 style="margin-top:0">Log Output</h4>
 <button type="button" class="btn-neutral" id="go-monitor-btn"
   style="font-size:.75em;padding:.15em .35em;margin-bottom:.4em" title="Full view">⛶ Full view</button>
-</div>"#,
-            r#"<button id="monitor-tab-btn" class="tab-btn" type="button">Monitor</button>"#,
-            r#"<div id="monitor-view" style="display:none;padding:.5em 1em">
-<h2 style="margin-top:.25em">Monitor</h2>
-</div>"#,
-        )
-    } else {
-        ("editor-layout", "", "", "")
-    };
-
-    // Shared log container — lives here in the DOM initially, JS moves it.
-    let log_container = if mode == EditMode::Running {
-        r#"<div id="log-container">
+<div id="log-container">
 <div style="margin:.25em 0;display:flex;gap:.25em;flex-wrap:wrap;align-items:center">
   <button id="log-toggle" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Monitor: off</button>
   <button id="log-clear" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Clear</button>
   <label style="font-size:.8em;color:#555">Lines: <input id="log-max-input" type="number" value="50" min="10" max="9999" style="width:3.5em;font-size:1em;padding:.1em .2em"></label>
 </div>
 <div id="log-output"></div>
-</div>"#
+</div>
+</div>"#,
+        )
     } else {
-        ""
+        ("editor-layout", "")
     };
 
+    // Monitor tab and view are always rendered so the tab is reachable from any mode.
+    let mon_cls = "tab-btn"; // never "active" since it's a view toggle, not a URL mode
     format!(
         r#"<div class="mode-tabs">
   <a href="/" class="{run_cls}">Running config</a>
   <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
-  {monitor_tab_btn}
+  <button id="monitor-tab-btn" class="{mon_cls}" type="button">Monitor</button>
 </div>
-{log_container}
-{monitor_view}
+<div id="monitor-view" style="display:none;padding:.5em 1em">
+<h2 style="margin-top:.25em">Monitor</h2>
+</div>
 <div id="editor-view" class="{layout_cls}">
 {log_panel}
 <div>
@@ -963,9 +956,7 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("  var monitorView = document.getElementById('monitor-view');\n");
         s.push_str("  var monitorTabBtn = document.getElementById('monitor-tab-btn');\n");
         s.push_str("  var goMonitorBtn = document.getElementById('go-monitor-btn');\n");
-
-        // Place log container in the narrow panel on load.
-        s.push_str("  logPanelSlot.appendChild(logContainer);\n");
+        // log-container is already inside log-panel-slot in the HTML — no move needed on load.
 
         s.push_str("  function showBpError(msg) {\n");
         s.push_str("    var d = document.createElement('div'); d.className = 'log-line'; d.style.color = '#f88';\n");
@@ -1017,7 +1008,7 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("    }\n");
         s.push_str("  }\n");
 
-        // SSE monitor start/stop.
+        // SSE monitor start/stop — persist state in localStorage.
         s.push_str("  var evtSource = null;\n");
         s.push_str("  function startMonitor() {\n");
         s.push_str("    if (evtSource) return;\n");
@@ -1031,18 +1022,21 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("    };\n");
         s.push_str("    evtSource.onerror = function() {\n");
         s.push_str("      logToggle.textContent = 'Monitor: off'; evtSource.close(); evtSource = null;\n");
+        s.push_str("      localStorage.removeItem('fwgui-monitor');\n");
         s.push_str("    };\n");
         s.push_str("    logToggle.textContent = 'Monitor: on';\n");
+        s.push_str("    localStorage.setItem('fwgui-monitor', '1');\n");
         s.push_str("  }\n");
         s.push_str("  function stopMonitor() {\n");
         s.push_str("    if (!evtSource) return;\n");
         s.push_str("    evtSource.close(); evtSource = null; logToggle.textContent = 'Monitor: off';\n");
+        s.push_str("    localStorage.removeItem('fwgui-monitor');\n");
         s.push_str("  }\n");
         s.push_str("  logToggle.addEventListener('click', function() { if (evtSource) stopMonitor(); else startMonitor(); });\n");
         s.push_str("  logClear.addEventListener('click', function() { logEl.innerHTML = ''; });\n");
 
         // Sync gutter + sidebar from server list.
-        // On page load: auto-start monitor if breakpoints already exist (reload recovery).
+        // Does NOT auto-start here — localStorage check on page load handles that.
         s.push_str("  function syncBreakpoints() {\n");
         s.push_str("    fetch('/breakpoints').then(function(r){return r.json();}).then(function(list){\n");
         s.push_str("      var ranges = [];\n");
@@ -1053,7 +1047,6 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("      ranges.sort(function(a,b){return a.from-b.from;});\n");
         s.push_str("      view.dispatch({ effects: bpReset.of(RangeSet.of(ranges, true)) });\n");
         s.push_str("      updateBpSidebar(list);\n");
-        s.push_str("      if (list.length && !evtSource) startMonitor();\n");
         s.push_str("    }).catch(function(){});\n");
         s.push_str("  }\n");
 
@@ -1084,7 +1077,13 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("      }).catch(function(){});\n");
         s.push_str("  }\n");
 
+        // Page load: restore monitor from localStorage, then sync breakpoints.
+        s.push_str("  if (localStorage.getItem('fwgui-monitor')) startMonitor();\n");
         s.push_str("  syncBreakpoints();\n");
+    } else {
+        // Non-running modes: Monitor tab navigates to running config.
+        s.push_str("  var _mb = document.getElementById('monitor-tab-btn');\n");
+        s.push_str("  if (_mb) _mb.onclick = function() { window.location.href = '/'; };\n");
     }
 
     // Expose insert helper for sidebar click handlers.
