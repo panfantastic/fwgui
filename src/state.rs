@@ -68,7 +68,6 @@ pub enum FwState {
 
 pub struct ActiveBreakpoint {
     pub rule: RuleHandle,
-    pub log_handle: u64,
 }
 
 pub struct AppState {

@@ -53,13 +53,16 @@ pub fn get_ruleset_annotated() -> Result<String, NftError> {
     }
 }
 
-/// Identity of a single nftables rule: where it lives and its handle.
+/// Identity of a single nftables rule: where it lives, its handle, and its original text.
+/// `rule_text` is the rule content stripped of the `# handle N` annotation — used to
+/// restore the rule exactly when a breakpoint is cleared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleHandle {
     pub table_family: String,
     pub table_name: String,
     pub chain_name: String,
     pub handle: u64,
+    pub rule_text: String,
 }
 
 /// Parse the output of `nft -a list ruleset` and return a map of
@@ -95,11 +98,17 @@ pub fn parse_ruleset_handles(text: &str) -> std::collections::HashMap<usize, Rul
                 || trimmed.starts_with("map ");
             if !skip {
                 if let Some(h) = extract_handle(trimmed) {
+                    // Strip the "# handle N" annotation to get the plain rule text.
+                    let rule_text = trimmed.rfind("# handle ")
+                        .map(|i| trimmed[..i].trim())
+                        .unwrap_or(trimmed)
+                        .to_string();
                     map.insert(lineno, RuleHandle {
                         table_family: table_family.clone(),
                         table_name: table_name.clone(),
                         chain_name: chain_name.clone(),
                         handle: h,
+                        rule_text,
                     });
                 }
             }
@@ -110,43 +119,52 @@ pub fn parse_ruleset_handles(text: &str) -> std::collections::HashMap<usize, Rul
     map
 }
 
-/// Insert a `log` rule before `rule.handle` in the live ruleset.
-/// Uses `nft -a -e insert rule ... position <handle>` so the new handle is echoed back.
-/// Returns the handle of the newly inserted log rule.
-pub fn insert_breakpoint(rule: &RuleHandle, bp_label: &str) -> Result<u64, NftError> {
-    let prefix = format!("\"fwgui-bp-{bp_label}: \"");
-    let out = Command::new("nft")
-        .args([
-            "-a", "-e",
-            "insert", "rule",
-            &rule.table_family, &rule.table_name, &rule.chain_name,
-            "position", &rule.handle.to_string(),
-            "log", "prefix", &prefix, "flags", "all",
-        ])
-        .output()?;
-    if out.status.success() {
-        let text = String::from_utf8_lossy(&out.stdout);
-        extract_handle(text.trim())
-            .ok_or_else(|| NftError::Nft("could not parse new rule handle from nft echo".into()))
-    } else {
-        Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
+/// Inject `log prefix "fwgui-bp-<label>: "` before the terminal verdict in `rule_text`.
+/// If no known verdict is found the log statement is appended.
+fn insert_log_before_verdict(rule_text: &str, log_stmt: &str) -> String {
+    const VERDICTS: &[&str] = &["accept", "drop", "reject", "return", "continue", "jump", "goto"];
+    let bytes = rule_text.as_bytes();
+    let mut last: Option<usize> = None;
+    for &v in VERDICTS {
+        let mut from = 0;
+        while let Some(pos) = rule_text[from..].find(v) {
+            let abs = from + pos;
+            let pre_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric() && bytes[abs - 1] != b'_';
+            let end = abs + v.len();
+            let suf_ok = end >= rule_text.len() || !bytes[end].is_ascii_alphanumeric() && bytes[end] != b'_';
+            if pre_ok && suf_ok {
+                last = Some(abs);
+            }
+            from = abs + 1;
+        }
+    }
+    match last {
+        Some(pos) => format!("{}{} {}", &rule_text[..pos], log_stmt, &rule_text[pos..]),
+        None => format!("{} {}", rule_text.trim_end(), log_stmt),
     }
 }
 
-/// Delete a breakpoint log rule by its handle.
-pub fn remove_breakpoint(rule: &RuleHandle, log_handle: u64) -> Result<(), NftError> {
-    let out = Command::new("nft")
-        .args([
-            "delete", "rule",
-            &rule.table_family, &rule.table_name, &rule.chain_name,
-            "handle", &log_handle.to_string(),
-        ])
-        .output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
-    }
+/// Set a breakpoint on `rule` by replacing it with an identical rule that has
+/// `log prefix "fwgui-bp-<label>: "` injected before its verdict.
+/// The handle is preserved by `nft replace rule`.  Returns the (unchanged) handle.
+pub fn insert_breakpoint(rule: &RuleHandle, bp_label: &str) -> Result<u64, NftError> {
+    let log_stmt = format!("log prefix \"fwgui-bp-{bp_label}: \"");
+    let augmented = insert_log_before_verdict(&rule.rule_text, &log_stmt);
+    let script = format!(
+        "replace rule {} {} {} handle {} {}\n",
+        rule.table_family, rule.table_name, rule.chain_name, rule.handle, augmented
+    );
+    run_script(&script)?;
+    Ok(rule.handle)
+}
+
+/// Clear a breakpoint by replacing the rule with its original text (stored in `rule.rule_text`).
+pub fn remove_breakpoint(rule: &RuleHandle) -> Result<(), NftError> {
+    let script = format!(
+        "replace rule {} {} {} handle {} {}\n",
+        rule.table_family, rule.table_name, rule.chain_name, rule.handle, rule.rule_text
+    );
+    run_script(&script)
 }
 
 fn extract_handle(line: &str) -> Option<u64> {

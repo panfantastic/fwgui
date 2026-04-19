@@ -1201,7 +1201,7 @@ pub async fn breakpoint_set(
         Ok(h) => h,
         Err(e) => return Json(BreakpointResponse { ok: false, error: Some(e.to_string()), log_handle: None }),
     };
-    state.breakpoints.lock().unwrap().insert(req.line, ActiveBreakpoint { rule, log_handle });
+    state.breakpoints.lock().unwrap().insert(req.line, ActiveBreakpoint { rule });
     Json(BreakpointResponse { ok: true, error: None, log_handle: Some(log_handle) })
 }
 
@@ -1212,7 +1212,7 @@ pub async fn breakpoint_clear(
     let bp = state.breakpoints.lock().unwrap().remove(&line);
     match bp {
         None => Json(ValidateResponse { ok: false, error: Some(format!("no breakpoint at line {line}")) }),
-        Some(active) => match nft::remove_breakpoint(&active.rule, active.log_handle) {
+        Some(active) => match nft::remove_breakpoint(&active.rule) {
             Ok(()) => Json(ValidateResponse { ok: true, error: None }),
             Err(e) => Json(ValidateResponse { ok: false, error: Some(e.to_string()) }),
         }
@@ -1229,7 +1229,7 @@ pub async fn breakpoints_list(
         table_name: bp.rule.table_name.clone(),
         chain_name: bp.rule.chain_name.clone(),
         rule_handle: bp.rule.handle,
-        log_handle: bp.log_handle,
+        log_handle: bp.rule.handle,
     }).collect();
     list.sort_by_key(|b| b.line);
     Json(list)
