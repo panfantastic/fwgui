@@ -2,7 +2,7 @@ mod nft;
 mod routes;
 mod state;
 
-use axum::{Router, routing::{get, post}, response::Response, http::header};
+use axum::{Router, routing::{delete, get, post}, response::Response, http::header};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -33,6 +33,10 @@ async fn main() {
         .route("/clear", post(routes::clear))
         .route("/validate", post(routes::validate))
         .route("/save-config", post(routes::save_config))
+        .route("/breakpoint", post(routes::breakpoint_set))
+        .route("/breakpoint/{line}", delete(routes::breakpoint_clear))
+        .route("/breakpoints", get(routes::breakpoints_list))
+        .route("/log-stream", get(routes::log_stream))
         .with_state(app_state);
 
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();

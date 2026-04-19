@@ -43,6 +43,117 @@ pub fn get_ruleset_text() -> Result<String, NftError> {
     }
 }
 
+/// Ruleset text with `# handle N` annotations on each rule (via `nft -a list ruleset`).
+pub fn get_ruleset_annotated() -> Result<String, NftError> {
+    let out = Command::new("nft").args(["-a", "list", "ruleset"]).output()?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
+    }
+}
+
+/// Identity of a single nftables rule: where it lives and its handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleHandle {
+    pub table_family: String,
+    pub table_name: String,
+    pub chain_name: String,
+    pub handle: u64,
+}
+
+/// Parse the output of `nft -a list ruleset` and return a map of
+/// 0-based line number → RuleHandle for every rule line that carries a handle.
+/// Chain type declarations, policy lines, set blocks, and closing braces are skipped.
+pub fn parse_ruleset_handles(text: &str) -> std::collections::HashMap<usize, RuleHandle> {
+    let mut map = std::collections::HashMap::new();
+    let mut depth: i32 = 0;
+    let mut table_family = String::new();
+    let mut table_name = String::new();
+    let mut chain_name = String::new();
+
+    for (lineno, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
+        let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
+
+        if depth == 0 && trimmed.starts_with("table ") {
+            let rest = &trimmed["table ".len()..];
+            let mut tokens = rest.split_ascii_whitespace();
+            if let (Some(fam), Some(nam)) = (tokens.next(), tokens.next()) {
+                table_family = fam.to_string();
+                table_name = nam.trim_end_matches(|c: char| c == '{' || c.is_ascii_whitespace()).to_string();
+            }
+        } else if depth == 1 && trimmed.starts_with("chain ") {
+            let rest = &trimmed["chain ".len()..];
+            chain_name = rest.split_ascii_whitespace().next().unwrap_or("").to_string();
+        } else if depth == 2 && !trimmed.is_empty() && !trimmed.starts_with('}') {
+            let skip = trimmed.starts_with('#')
+                || trimmed.starts_with("type ")
+                || trimmed.starts_with("policy ")
+                || trimmed.starts_with("set ")
+                || trimmed.starts_with("map ");
+            if !skip {
+                if let Some(h) = extract_handle(trimmed) {
+                    map.insert(lineno, RuleHandle {
+                        table_family: table_family.clone(),
+                        table_name: table_name.clone(),
+                        chain_name: chain_name.clone(),
+                        handle: h,
+                    });
+                }
+            }
+        }
+
+        depth = (depth + opens - closes).max(0);
+    }
+    map
+}
+
+/// Insert a `log` rule before `rule.handle` in the live ruleset.
+/// Uses `nft -a -e insert rule ... position <handle>` so the new handle is echoed back.
+/// Returns the handle of the newly inserted log rule.
+pub fn insert_breakpoint(rule: &RuleHandle, bp_label: &str) -> Result<u64, NftError> {
+    let prefix = format!("\"fwgui-bp-{bp_label}: \"");
+    let out = Command::new("nft")
+        .args([
+            "-a", "-e",
+            "insert", "rule",
+            &rule.table_family, &rule.table_name, &rule.chain_name,
+            "position", &rule.handle.to_string(),
+            "log", "prefix", &prefix, "flags", "all",
+        ])
+        .output()?;
+    if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        extract_handle(text.trim())
+            .ok_or_else(|| NftError::Nft("could not parse new rule handle from nft echo".into()))
+    } else {
+        Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
+    }
+}
+
+/// Delete a breakpoint log rule by its handle.
+pub fn remove_breakpoint(rule: &RuleHandle, log_handle: u64) -> Result<(), NftError> {
+    let out = Command::new("nft")
+        .args([
+            "delete", "rule",
+            &rule.table_family, &rule.table_name, &rule.chain_name,
+            "handle", &log_handle.to_string(),
+        ])
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
+    }
+}
+
+fn extract_handle(line: &str) -> Option<u64> {
+    let idx = line.rfind("# handle ")?;
+    line[idx + "# handle ".len()..].split_ascii_whitespace().next()?.parse().ok()
+}
+
 /// Current ruleset as structured JSON — foundation for the packet analyser.
 #[allow(dead_code)]
 pub fn get_ruleset_json() -> Result<NftablesSchema<'static>, NftError> {
@@ -242,5 +353,70 @@ fn run_script(content: &str) -> Result<(), NftError> {
         Ok(())
     } else {
         Err(NftError::Nft(String::from_utf8_lossy(&out.stderr).into_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = "\
+table inet filter { # handle 1
+\tchain input { # handle 1
+\t\ttype filter hook input priority 0; policy drop;
+\t\tct state established,related accept # handle 3
+\t\tiif lo accept # handle 4
+\t\ttcp dport 22 accept # handle 5
+\t\tdrop # handle 6
+\t} # handle 1
+
+\tchain forward { # handle 2
+\t\tdrop # handle 7
+\t} # handle 2
+} # handle 1
+table ip nat { # handle 2
+\tchain postrouting { # handle 1
+\t\tmasquerade # handle 2
+\t} # handle 1
+} # handle 2";
+
+    #[test]
+    fn test_parse_ruleset_handles_maps_rules() {
+        let map = parse_ruleset_handles(SAMPLE);
+        // line 3 = ct state...
+        let r = map.get(&3).expect("line 3 should be a rule");
+        assert_eq!(r.table_family, "inet");
+        assert_eq!(r.table_name, "filter");
+        assert_eq!(r.chain_name, "input");
+        assert_eq!(r.handle, 3);
+
+        // line 10 = drop (forward chain)
+        let r2 = map.get(&10).expect("line 10 should be a rule");
+        assert_eq!(r2.chain_name, "forward");
+        assert_eq!(r2.handle, 7);
+
+        // nat table — masquerade is line 15
+        let r3 = map.get(&15).expect("line 15 should be a rule");
+        assert_eq!(r3.table_family, "ip");
+        assert_eq!(r3.table_name, "nat");
+        assert_eq!(r3.handle, 2);
+    }
+
+    #[test]
+    fn test_parse_skips_declarations_and_closing_braces() {
+        let map = parse_ruleset_handles(SAMPLE);
+        // line 2 = type filter hook ... (chain declaration) — must not appear
+        assert!(!map.contains_key(&2), "chain type declaration should not be a rule");
+        // table/chain header lines
+        assert!(!map.contains_key(&0), "table line should not be a rule");
+        assert!(!map.contains_key(&1), "chain line should not be a rule");
+    }
+
+    #[test]
+    fn test_extract_handle() {
+        assert_eq!(extract_handle("\t\ttcp dport 22 accept # handle 5"), Some(5));
+        assert_eq!(extract_handle("table inet filter { # handle 1"), Some(1));
+        assert_eq!(extract_handle("\t\ttype filter hook input priority 0; policy drop;"), None);
+        assert_eq!(extract_handle(""), None);
     }
 }

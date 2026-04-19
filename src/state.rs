@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 use tokio::sync::oneshot;
+
+use crate::nft::RuleHandle;
 
 pub struct Config {
     pub port: u16,
@@ -63,9 +66,16 @@ pub enum FwState {
     },
 }
 
+pub struct ActiveBreakpoint {
+    pub rule: RuleHandle,
+    pub log_handle: u64,
+}
+
 pub struct AppState {
     pub fw: Mutex<FwState>,
     pub config: Config,
+    /// Active breakpoints keyed by 0-based line number in the annotated ruleset.
+    pub breakpoints: Mutex<HashMap<usize, ActiveBreakpoint>>,
 }
 
 impl AppState {
@@ -73,6 +83,7 @@ impl AppState {
         Self {
             fw: Mutex::new(FwState::Idle),
             config,
+            breakpoints: Mutex::new(HashMap::new()),
         }
     }
 }

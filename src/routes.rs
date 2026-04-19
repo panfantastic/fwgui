@@ -1,16 +1,23 @@
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     response::{Html, Redirect},
+    response::sse::{Event, KeepAlive, Sse},
     Form,
 };
+use futures_util::Stream;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::nft;
-use crate::state::{AppState, ChangeMode, FwState, StagedChange};
+use crate::state::{ActiveBreakpoint, AppState, ChangeMode, FwState, StagedChange};
 
 struct SidebarData {
     interfaces: Vec<String>,
@@ -50,6 +57,42 @@ pub struct ValidateResponse {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct BreakpointRequest {
+    line: usize,
+}
+
+#[derive(Serialize)]
+pub struct BreakpointResponse {
+    ok: bool,
+    error: Option<String>,
+    log_handle: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct BreakpointInfo {
+    line: usize,
+    table_family: String,
+    table_name: String,
+    chain_name: String,
+    rule_handle: u64,
+    log_handle: u64,
+}
+
+/// Bridges an mpsc::Receiver<String> into a Stream<Item = Result<Event, Infallible>>.
+struct LogEventStream(mpsc::Receiver<String>);
+
+impl Stream for LogEventStream {
+    type Item = Result<Event, Infallible>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.0.poll_recv(cx) {
+            Poll::Ready(Some(line)) => Poll::Ready(Some(Ok(Event::default().data(line)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -67,9 +110,13 @@ pub async fn index(
 ) -> Html<String> {
     let edit_mode = if q.mode.as_deref() == Some("saved") { EditMode::Saved } else { EditMode::Running };
 
-    let (live_text, live_error) = match nft::get_ruleset_text() {
+    // Running config uses annotated output (with # handle N) so gutter breakpoints map correctly.
+    let (live_text, live_error) = match nft::get_ruleset_annotated() {
         Ok(t) => (t, None),
-        Err(e) => (String::new(), Some(e.to_string())),
+        Err(e) => match nft::get_ruleset_text() {
+            Ok(t) => (t, Some(e.to_string())),
+            Err(e2) => (String::new(), Some(e2.to_string())),
+        },
     };
 
     let fw = state.fw.lock().unwrap();
@@ -282,7 +329,7 @@ fn page(body: &str) -> String {
 <meta charset="utf-8">
 <title>fwgui</title>
 <style>
-  body {{ font-family: monospace; max-width: 960px; margin: 2em auto; padding: 0 1em; background: #fafafa; }}
+  body {{ font-family: monospace; max-width: 1200px; margin: 2em auto; padding: 0 1em; background: #fafafa; }}
   h1 {{ border-bottom: 2px solid #333; padding-bottom: .25em; }}
   h2 {{ border-bottom: 1px solid #aaa; padding-bottom: .15em; margin-top: 1.5em; }}
   h3 {{ margin-top: 1em; color: #444; }}
@@ -320,6 +367,17 @@ fn page(body: &str) -> String {
   .tab-btn.active {{ color: #000; background: #fff; border-color: #ccc; border-bottom-color: #fff; font-weight: bold; }}
   .tab-btn:hover:not(.active) {{ background: #f0f0f0; color: #333; }}
   .editor-layout {{ display: grid; grid-template-columns: 1fr 220px; gap: 1em; align-items: start; }}
+  .editor-layout-bp {{ grid-template-columns: 200px 1fr 220px; }}
+  .log-panel {{ border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
+                font-size: .85em; position: sticky; top: 1em; }}
+  .log-panel h4 {{ margin: .2em 0 .4em; color: #333; border-bottom: 1px solid #eee; padding-bottom: .1em; font-size: .95em; }}
+  #log-output {{ height: 340px; overflow-y: auto; background: #111; color: #9f9; border-radius: 2px;
+                 padding: .4em; margin-top: .4em; font-size: .8em; }}
+  .log-line {{ white-space: pre-wrap; word-break: break-all; padding: 1px 0; border-bottom: 1px solid #222; }}
+  .bp-marker {{ color: #c00; cursor: pointer; font-size: 1em; line-height: 1; padding: 0 2px; }}
+  .bp-marker:hover {{ color: #f00; }}
+  .bp-empty-marker {{ display: inline-block; width: .8em; cursor: pointer; padding: 0 2px; }}
+  .bp-empty-marker:hover::after {{ content: '○'; color: #aaa; }}
   .sidebar {{ border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
               font-size: .85em; position: sticky; top: 1em; }}
   .sidebar h4 {{ margin: .4em 0 .2em; color: #333; border-bottom: 1px solid #eee;
@@ -431,8 +489,8 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         .map(|e| format!("<div class='msg error'>{}</div>", he(e)))
         .unwrap_or_default();
     let live_js = js_str(live_text);
-    let script = editing_script(&live_js, mode == EditMode::Saved);
-    let sidebar_html = render_sidebar(sidebar);
+    let script = editing_script(&live_js, mode == EditMode::Saved, mode == EditMode::Running);
+    let sidebar_html = render_sidebar(sidebar, mode == EditMode::Running);
 
     let (run_cls, sav_cls) = if mode == EditMode::Running {
         ("tab-btn active", "tab-btn")
@@ -466,12 +524,29 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         ""
     };
 
+    let (layout_cls, log_panel) = if mode == EditMode::Running {
+        (
+            "editor-layout editor-layout-bp",
+            r#"<div class="log-panel">
+<h4>Log Output</h4>
+<div style="margin:.25em 0;display:flex;gap:.25em">
+  <button id="log-toggle" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Monitor: off</button>
+  <button id="log-clear" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Clear</button>
+</div>
+<div id="log-output"></div>
+</div>"#,
+        )
+    } else {
+        ("editor-layout", "")
+    };
+
     format!(
         r#"<div class="mode-tabs">
   <a href="/" class="{run_cls}">Running config</a>
   <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
 </div>
-<div class="editor-layout">
+<div class="{layout_cls}">
+{log_panel}
 <div>
 {error_html}<h2>{heading}</h2>
 <form method="post" action="/stage" id="stage-form">
@@ -492,7 +567,7 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
     )
 }
 
-fn render_sidebar(sidebar: &SidebarData) -> String {
+fn render_sidebar(sidebar: &SidebarData, with_log_groups: bool) -> String {
     let mut h = String::from("<aside class=\"sidebar\">\n");
 
     h.push_str("<h4>Interfaces</h4><ul>\n");
@@ -543,6 +618,12 @@ fn render_sidebar(sidebar: &SidebarData) -> String {
     h.push_str("  <li><a href=\"https://wiki.nftables.org/\" target=\"_blank\" rel=\"noopener noreferrer\">nftables wiki \u{2197}</a></li>\n");
     h.push_str("  <li style=\"margin-top:.4em\"><button type=\"button\" class=\"btn-neutral\" id=\"help-toggle\" style=\"font-size:.85em;padding:.2em .5em\">Keyword help: off</button></li>\n");
     h.push_str("</ul>\n");
+
+    if with_log_groups {
+        h.push_str("<h4>Log Groups</h4>\n");
+        h.push_str("<div id=\"bp-list\"><span class=\"sb-empty\">No breakpoints</span></div>\n");
+        h.push_str("<p style=\"font-size:.8em;color:#888;margin:.3em 0\">Click gutter to toggle</p>\n");
+    }
 
     h.push_str("</aside>\n");
     h
@@ -611,10 +692,10 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 // Script builders — concatenation avoids format! brace-escaping for JS code.
 // ---------------------------------------------------------------------------
 
-fn editing_script(live_js: &str, has_save_form: bool) -> String {
+fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, foldService, vim } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, RangeSet, foldService, vim, gutter, GutterMarker } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
@@ -769,18 +850,74 @@ fn editing_script(live_js: &str, has_save_form: bool) -> String {
     s.push_str("    return { from: openPos + 1, to: closeLine.from - 1 };\n");
     s.push_str("  });\n");
 
+    // Breakpoint gutter (running config mode only).
+    // Follows the official CM6 pattern: StateField<RangeSet<GutterMarker>> + gutter({markers}).
+    let bp_gutter_ext = if is_running { "bpGutter," } else { "" };
+    if is_running {
+        // Two effects: toggle a single position, or replace the whole set from server sync.
+        s.push_str("  var bpToggle = StateEffect.define({ map: function(v,m){ return {pos:m.mapPos(v.pos),on:v.on}; } });\n");
+        s.push_str("  var bpReset = StateEffect.define();\n");
+
+        // StateField stores a RangeSet<GutterMarker>.
+        s.push_str("  class BpMarker extends GutterMarker {\n");
+        s.push_str("    toDOM() { var d=document.createElement('div'); d.className='bp-marker'; d.textContent='\\u25CF'; return d; }\n");
+        s.push_str("  }\n");
+        s.push_str("  var bpMarker = new BpMarker();\n");
+
+        s.push_str("  var bpField = StateField.define({\n");
+        s.push_str("    create: function() { return RangeSet.empty; },\n");
+        s.push_str("    update: function(set, tr) {\n");
+        s.push_str("      set = set.map(tr.changes);\n");
+        s.push_str("      for (var i=0; i<tr.effects.length; i++) {\n");
+        s.push_str("        var e = tr.effects[i];\n");
+        s.push_str("        if (e.is(bpReset)) return e.value;\n");
+        s.push_str("        if (e.is(bpToggle)) {\n");
+        s.push_str("          if (e.value.on) set = set.update({add:[bpMarker.range(e.value.pos)]});\n");
+        s.push_str("          else { var rm=e.value.pos; set = set.update({filter:function(f){return f!==rm;}}); }\n");
+        s.push_str("        }\n");
+        s.push_str("      }\n");
+        s.push_str("      return set;\n");
+        s.push_str("    }\n");
+        s.push_str("  });\n");
+
+        s.push_str("  var bpGutter = gutter({\n");
+        s.push_str("    class: 'cm-bp-gutter',\n");
+        s.push_str("    markers: function(v) { return v.state.field(bpField); },\n");
+        s.push_str("    initialSpacer: function() { return bpMarker; },\n");
+        s.push_str("    domEventHandlers: {\n");
+        s.push_str("      mousedown: function(view, line) {\n");
+        s.push_str("        var pos = line.from;\n");
+        s.push_str("        var lineNo = view.state.doc.lineAt(pos).number;\n");
+        s.push_str("        var has = false;\n");
+        s.push_str("        view.state.field(bpField).between(pos, pos, function(){ has=true; });\n");
+        s.push_str("        if (has) {\n");
+        s.push_str("          clearBreakpoint(view, pos, lineNo-1);\n");
+        s.push_str("        } else {\n");
+        s.push_str("          setBreakpoint(view, pos, lineNo-1);\n");
+        s.push_str("        }\n");
+        s.push_str("        return true;\n");
+        s.push_str("      }\n");
+        s.push_str("    }\n");
+        s.push_str("  });\n");
+    }
+
     // Create the CodeMirror editor.
     s.push_str("  var view = new EditorView({\n");
     s.push_str("    state: EditorState.create({\n");
     s.push_str("      doc: initialContent,\n");
     s.push_str("      extensions: [\n");
     s.push_str("        vim(),\n");
+    s.push_str(&format!("        {bp_gutter_ext}\n"));
     s.push_str("        basicSetup,\n");
     s.push_str("        nftFold,\n");
     s.push_str("        helpComp.of([]),\n");
     s.push_str("        keymap.of([indentWithTab]),\n");
     s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
+    if is_running {
+        // bpField must be explicit so view.state.field(bpField) works inside gutter markers/handlers.
+        s.push_str("        bpField,\n");
+    }
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
     s.push_str("          if (update.docChanged) updateInlineDiff(update.view);\n");
     s.push_str("        }),\n");
@@ -791,6 +928,103 @@ fn editing_script(live_js: &str, has_save_form: bool) -> String {
 
     // Apply initial diff decorations.
     s.push_str("  updateInlineDiff(view);\n");
+
+    // Breakpoint and log stream helpers (running config mode only).
+    if is_running {
+        // Declare DOM refs first so showBpError can reference logEl.
+        s.push_str("  var logEl = document.getElementById('log-output');\n");
+        s.push_str("  var logToggle = document.getElementById('log-toggle');\n");
+        s.push_str("  var logClear = document.getElementById('log-clear');\n");
+
+        s.push_str("  function showBpError(msg) {\n");
+        s.push_str("    var d = document.createElement('div'); d.className = 'log-line'; d.style.color = '#f88';\n");
+        s.push_str("    d.textContent = 'Breakpoint error: ' + msg;\n");
+        s.push_str("    logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;\n");
+        s.push_str("  }\n");
+
+        s.push_str("  function updateBpSidebar(list) {\n");
+        s.push_str("    var el = document.getElementById('bp-list');\n");
+        s.push_str("    if (!list.length) { el.innerHTML = '<span class=\"sb-empty\">No breakpoints</span>'; return; }\n");
+        s.push_str("    var html = '<ul style=\"margin:.2em 0;padding:0 0 0 .5em\">';\n");
+        s.push_str("    for (var i=0; i<list.length; i++) {\n");
+        s.push_str("      var bp = list[i];\n");
+        s.push_str("      html += '<li style=\"padding:.1em 0\"><button type=\"button\" class=\"sb-item\" style=\"color:#c00\" data-line=\"'+bp.line+'\">\\u25CF</button> L'+(bp.line+1)+' '+bp.chain_name+'</li>';\n");
+        s.push_str("    }\n");
+        s.push_str("    html += '</ul>';\n");
+        s.push_str("    el.innerHTML = html;\n");
+        s.push_str("    var btns = el.querySelectorAll('.sb-item[data-line]');\n");
+        s.push_str("    for (var j=0; j<btns.length; j++) {\n");
+        s.push_str("      btns[j].addEventListener('click', (function(btn){\n");
+        s.push_str("        return function() {\n");
+        s.push_str("          var zl = parseInt(btn.dataset.line);\n");
+        s.push_str("          var pos = (zl+1 <= view.state.doc.lines) ? view.state.doc.line(zl+1).from : 0;\n");
+        s.push_str("          clearBreakpoint(view, pos, zl);\n");
+        s.push_str("        };\n");
+        s.push_str("      })(btns[j]));\n");
+        s.push_str("    }\n");
+        s.push_str("  }\n");
+
+        // Sync gutter + sidebar from server's breakpoint list.
+        s.push_str("  function syncBreakpoints() {\n");
+        s.push_str("    fetch('/breakpoints').then(function(r){return r.json();}).then(function(list){\n");
+        s.push_str("      var ranges = [];\n");
+        s.push_str("      for (var i=0; i<list.length; i++) {\n");
+        s.push_str("        var lineNo = list[i].line + 1;\n");
+        s.push_str("        if (lineNo <= view.state.doc.lines) ranges.push(bpMarker.range(view.state.doc.line(lineNo).from));\n");
+        s.push_str("      }\n");
+        s.push_str("      ranges.sort(function(a,b){return a.from-b.from;});\n");
+        s.push_str("      view.dispatch({ effects: bpReset.of(RangeSet.of(ranges, true)) });\n");
+        s.push_str("      updateBpSidebar(list);\n");
+        s.push_str("    }).catch(function(){});\n");
+        s.push_str("  }\n");
+
+        // pos = doc position (line.from); zeroLine = 0-based line number for server.
+        s.push_str("  function setBreakpoint(v, pos, zeroLine) {\n");
+        s.push_str("    fetch('/breakpoint', {\n");
+        s.push_str("      method: 'POST', headers: {'Content-Type':'application/json'},\n");
+        s.push_str("      body: JSON.stringify({line: zeroLine})\n");
+        s.push_str("    }).then(function(r){return r.json();}).then(function(data){\n");
+        s.push_str("      if (data.ok) {\n");
+        s.push_str("        v.dispatch({ effects: bpToggle.of({pos:pos, on:true}) });\n");
+        s.push_str("        syncBreakpoints();\n");
+        s.push_str("      } else { showBpError(data.error || 'unknown'); }\n");
+        s.push_str("    }).catch(function(e){ showBpError(String(e)); });\n");
+        s.push_str("  }\n");
+
+        s.push_str("  function clearBreakpoint(v, pos, zeroLine) {\n");
+        s.push_str("    fetch('/breakpoint/'+zeroLine, {method:'DELETE'})\n");
+        s.push_str("      .then(function(r){return r.json();})\n");
+        s.push_str("      .then(function(data){\n");
+        s.push_str("        if (data.ok) {\n");
+        s.push_str("          v.dispatch({ effects: bpToggle.of({pos:pos, on:false}) });\n");
+        s.push_str("          syncBreakpoints();\n");
+        s.push_str("        } else { showBpError(data.error || 'unknown'); }\n");
+        s.push_str("      }).catch(function(){});\n");
+        s.push_str("  }\n");
+
+        // SSE log monitoring.
+        s.push_str("  var evtSource = null;\n");
+        s.push_str("  logToggle.addEventListener('click', function() {\n");
+        s.push_str("    if (evtSource) {\n");
+        s.push_str("      evtSource.close(); evtSource = null;\n");
+        s.push_str("      logToggle.textContent = 'Monitor: off';\n");
+        s.push_str("    } else {\n");
+        s.push_str("      evtSource = new EventSource('/log-stream');\n");
+        s.push_str("      evtSource.onmessage = function(e) {\n");
+        s.push_str("        var d = document.createElement('div'); d.className = 'log-line'; d.textContent = e.data;\n");
+        s.push_str("        logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;\n");
+        s.push_str("      };\n");
+        s.push_str("      evtSource.onerror = function() {\n");
+        s.push_str("        logToggle.textContent = 'Monitor: off';\n");
+        s.push_str("        evtSource.close(); evtSource = null;\n");
+        s.push_str("      };\n");
+        s.push_str("      logToggle.textContent = 'Monitor: on';\n");
+        s.push_str("    }\n");
+        s.push_str("  });\n");
+        s.push_str("  logClear.addEventListener('click', function() { logEl.innerHTML = ''; });\n");
+
+        s.push_str("  syncBreakpoints();\n");
+    }
 
     // Expose insert helper for sidebar click handlers.
     s.push_str("  window.fwInsert = function(text) {\n");
@@ -934,6 +1168,132 @@ fn redirect_error(msg: &str) -> Redirect {
 
 fn redirect_notice(msg: &str) -> Redirect {
     Redirect::to(&format!("/?notice={}", url_encode(msg)))
+}
+
+// ---------------------------------------------------------------------------
+// Breakpoint handlers
+// ---------------------------------------------------------------------------
+
+pub async fn breakpoint_set(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BreakpointRequest>,
+) -> Json<BreakpointResponse> {
+    let annotated = match nft::get_ruleset_annotated() {
+        Ok(t) => t,
+        Err(e) => return Json(BreakpointResponse { ok: false, error: Some(e.to_string()), log_handle: None }),
+    };
+    let handles = nft::parse_ruleset_handles(&annotated);
+    let rule = match handles.get(&req.line) {
+        Some(r) => r.clone(),
+        None => return Json(BreakpointResponse {
+            ok: false,
+            error: Some(format!("no rule at line {}", req.line)),
+            log_handle: None,
+        }),
+    };
+    let log_handle = match nft::insert_breakpoint(&rule, &req.line.to_string()) {
+        Ok(h) => h,
+        Err(e) => return Json(BreakpointResponse { ok: false, error: Some(e.to_string()), log_handle: None }),
+    };
+    state.breakpoints.lock().unwrap().insert(req.line, ActiveBreakpoint { rule, log_handle });
+    Json(BreakpointResponse { ok: true, error: None, log_handle: Some(log_handle) })
+}
+
+pub async fn breakpoint_clear(
+    State(state): State<Arc<AppState>>,
+    Path(line): Path<usize>,
+) -> Json<ValidateResponse> {
+    let bp = state.breakpoints.lock().unwrap().remove(&line);
+    match bp {
+        None => Json(ValidateResponse { ok: false, error: Some(format!("no breakpoint at line {line}")) }),
+        Some(active) => match nft::remove_breakpoint(&active.rule, active.log_handle) {
+            Ok(()) => Json(ValidateResponse { ok: true, error: None }),
+            Err(e) => Json(ValidateResponse { ok: false, error: Some(e.to_string()) }),
+        }
+    }
+}
+
+pub async fn breakpoints_list(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<BreakpointInfo>> {
+    let bps = state.breakpoints.lock().unwrap();
+    let mut list: Vec<BreakpointInfo> = bps.iter().map(|(&line, bp)| BreakpointInfo {
+        line,
+        table_family: bp.rule.table_family.clone(),
+        table_name: bp.rule.table_name.clone(),
+        chain_name: bp.rule.chain_name.clone(),
+        rule_handle: bp.rule.handle,
+        log_handle: bp.log_handle,
+    }).collect();
+    list.sort_by_key(|b| b.line);
+    Json(list)
+}
+
+/// SSE endpoint that streams kernel log lines containing `fwgui-bp-`.
+/// Reads /dev/kmsg directly (avoids the CAP_SYSLOG ioctl that dmesg uses),
+/// falling back to `journalctl -f -k` if /dev/kmsg is not accessible.
+/// On connect, writes a self-test marker to /dev/kmsg to confirm the pipeline
+/// end-to-end; if nf_log modules are missing the marker still appears but
+/// breakpoint packets won't.
+pub async fn log_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel::<String>(64);
+    let _ = tx.try_send("● Connecting to kernel log...".to_string());
+
+    tokio::spawn(async move {
+        match tokio::fs::OpenOptions::new().read(true).open("/dev/kmsg").await {
+            Ok(mut file) => {
+                // Seek to end so we skip the existing ring buffer, then inject a
+                // self-test marker — if it comes back we know the full pipeline works.
+                let _ = file.seek(std::io::SeekFrom::End(0)).await;
+                let _ = std::fs::write("/dev/kmsg",
+                    b"<6>fwgui-bp-test: monitoring active (if nf_log modules missing, only this line appears)\n");
+
+                let mut lines = BufReader::new(file).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => {
+                            if line.starts_with(' ') { continue; } // metadata continuation
+                            // /dev/kmsg format: "priority,seq,ts,flag;message"
+                            let msg = line.splitn(2, ';').nth(1).unwrap_or(&line);
+                            if msg.contains("fwgui-bp-") && tx.send(msg.to_string()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+            }
+            Err(kmsg_err) => {
+                // Fall back to journalctl.
+                let child = tokio::process::Command::new("journalctl")
+                    .args(["-f", "-k", "--output=cat"])
+                    .stdout(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn();
+                match child {
+                    Ok(mut c) => {
+                        let _ = tx.send("● Connected via journalctl — waiting for fwgui-bp- events...".to_string()).await;
+                        if let Some(stdout) = c.stdout.take() {
+                            let mut lines = BufReader::new(stdout).lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                if line.contains("fwgui-bp-") && tx.send(line).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(jctl_err) => {
+                        let _ = tx.send(format!(
+                            "ERROR: cannot read kernel log — /dev/kmsg: {kmsg_err} | journalctl: {jctl_err}\n\
+                             Hint: ensure nf_log_inet (or nf_log_ipv4/nf_log_ipv6) is loaded:\n\
+                             modprobe nf_log_inet"
+                        )).await;
+                    }
+                }
+            }
+        }
+    });
+    Sse::new(LogEventStream(rx)).keep_alive(KeepAlive::default())
 }
 
 fn url_encode(s: &str) -> String {
