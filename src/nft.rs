@@ -138,6 +138,63 @@ fn unix_to_stamp(secs: u64) -> String {
 
 fn leap(y: u64) -> bool { (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
 
+/// Build an incremental patch from a saved config.
+/// For each table: add (idempotent), flush, redefine. Prepend all defines.
+/// Tables not mentioned in the saved config are left untouched in the running ruleset.
+pub fn build_saved_config_patch(content: &str) -> String {
+    let mut script = String::new();
+
+    // All define lines first.
+    for line in content.lines() {
+        if line.trim().starts_with("define ") {
+            script.push_str(line);
+            script.push('\n');
+        }
+    }
+    if !script.is_empty() {
+        script.push('\n');
+    }
+
+    // Extract and emit each table block.
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with('#') { i += 1; continue; }
+
+        if let Some(rest) = trimmed.strip_prefix("table ") {
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if tokens.len() >= 2 {
+                let family = tokens[0];
+                let name = tokens[1].trim_end_matches('{').trim();
+                let start = i;
+                let mut depth = 0i32;
+                let mut end = i;
+                'blk: while end < lines.len() {
+                    for ch in lines[end].chars() {
+                        match ch {
+                            '{' => depth += 1,
+                            '}' => { depth -= 1; if depth == 0 { break 'blk; } }
+                            _ => {}
+                        }
+                    }
+                    end += 1;
+                }
+                let block = lines[start..=end.min(lines.len() - 1)].join("\n");
+                script.push_str(&format!("add table {family} {name}\n"));
+                script.push_str(&format!("flush table {family} {name}\n"));
+                script.push_str(&block);
+                script.push_str("\n\n");
+                i = end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    script
+}
+
 /// Network interfaces from /sys/class/net, sorted.
 pub fn get_interfaces() -> Vec<String> {
     let mut ifaces: Vec<String> = std::fs::read_dir("/sys/class/net")

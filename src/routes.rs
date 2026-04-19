@@ -113,19 +113,31 @@ pub async fn stage(
     if form.content.trim().is_empty() {
         return redirect_error("Content cannot be empty");
     }
-    let mode = match form.mode.as_str() {
-        "full" => ChangeMode::Full,
-        "patch" => ChangeMode::Patch,
-        _ => return redirect_error("Invalid mode"),
+
+    // saved_incremental: build a per-table patch; other modes use content verbatim.
+    let (mode, content) = if form.mode == "saved_incremental" {
+        let patch = nft::build_saved_config_patch(&form.content);
+        if patch.trim().is_empty() {
+            return redirect_error("No tables or defines found in saved config");
+        }
+        (ChangeMode::Patch, patch)
+    } else {
+        let m = match form.mode.as_str() {
+            "full" => ChangeMode::Full,
+            "patch" => ChangeMode::Patch,
+            _ => return redirect_error("Invalid mode"),
+        };
+        (m, form.content)
     };
-    if let Err(e) = nft::validate_script(&form.content) {
+
+    if let Err(e) = nft::validate_script(&content) {
         return redirect_error(&format!("Validation failed: {e}"));
     }
     let mut fw = state.fw.lock().unwrap();
     if matches!(*fw, FwState::Promoting { .. }) {
         return redirect_error("Cannot stage a change while promotion is pending");
     }
-    *fw = FwState::Staged(StagedChange { mode, content: form.content });
+    *fw = FwState::Staged(StagedChange { mode, content });
     redirect_notice("Change staged successfully")
 }
 
@@ -414,6 +426,18 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         EditMode::Saved => format!("Edit Ruleset — Saved config ({})", he(saved_path)),
     };
 
+    let mode_controls = match mode {
+        EditMode::Running => r#"<label for="mode-sel">Stage mode:</label>
+  <select id="mode-sel" name="mode">
+    <option value="full">Full replacement</option>
+    <option value="patch">Patch (incremental)</option>
+  </select><br>"#,
+        EditMode::Saved => r#"<input type="hidden" name="mode" value="saved_incremental">
+  <p style="margin:.2em 0 .4em;font-size:.85em;color:#555">
+    Staging applies only the tables in this file incrementally — other tables are left untouched.
+  </p>"#,
+    };
+
     let save_form = if mode == EditMode::Saved {
         r#"<form id="save-form" method="post" action="/save-config" style="display:inline;margin-left:.25em">
   <input type="hidden" id="save-content" name="content">
@@ -432,11 +456,7 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
 <div>
 {error_html}<h2>{heading}</h2>
 <form method="post" action="/stage" id="stage-form">
-  <label for="mode-sel">Stage mode:</label>
-  <select id="mode-sel" name="mode">
-    <option value="full">Full replacement</option>
-    <option value="patch">Patch (incremental)</option>
-  </select><br>
+  {mode_controls}
   <input type="hidden" id="content-hidden" name="content">
   <div id="editor"></div>
   <div style="margin:.5em 0">
