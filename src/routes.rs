@@ -671,6 +671,7 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("        basicSetup,\n");
     s.push_str("        nftFold,\n");
     s.push_str("        helpComp.of([]),\n");
+    s.push_str("        EditorView.domEventHandlers({ keydown: function(e) { if (e.key === 'Tab') e.preventDefault(); } }),\n");
     s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
