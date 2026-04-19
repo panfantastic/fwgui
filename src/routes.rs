@@ -507,7 +507,7 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 fn editing_script(live_js: &str) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, EditorState, StateEffect, StateField, Compartment, foldService, vim } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, foldService, vim } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
@@ -671,7 +671,7 @@ fn editing_script(live_js: &str) -> String {
     s.push_str("        basicSetup,\n");
     s.push_str("        nftFold,\n");
     s.push_str("        helpComp.of([]),\n");
-    s.push_str("        EditorView.domEventHandlers({ keydown: function(e) { if (e.key === 'Tab') e.preventDefault(); } }),\n");
+    s.push_str("        keymap.of([indentWithTab]),\n");
     s.push_str("        diffField,\n");
     s.push_str("        errField,\n");
     s.push_str("        EditorView.updateListener.of(function(update) {\n");
