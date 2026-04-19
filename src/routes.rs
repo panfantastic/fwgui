@@ -372,7 +372,8 @@ fn page(body: &str) -> String {
                 font-size: .85em; position: sticky; top: 1em; }}
   .log-panel h4 {{ margin: .2em 0 .4em; color: #333; border-bottom: 1px solid #eee; padding-bottom: .1em; font-size: .95em; }}
   #log-output {{ height: 340px; overflow-y: auto; background: #111; color: #9f9; border-radius: 2px;
-                 padding: .4em; margin-top: .4em; font-size: .8em; }}
+                 padding: .4em; margin-top: .4em; font-size: .8em;
+                 resize: vertical; min-height: 80px; }}
   .log-line {{ white-space: pre-wrap; word-break: break-all; padding: 1px 0; border-bottom: 1px solid #222; }}
   .bp-marker {{ color: #c00; cursor: pointer; font-size: 1em; line-height: 1; padding: 0 2px; }}
   .bp-marker:hover {{ color: #f00; }}
@@ -529,9 +530,10 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
             "editor-layout editor-layout-bp",
             r#"<div class="log-panel">
 <h4>Log Output</h4>
-<div style="margin:.25em 0;display:flex;gap:.25em">
+<div style="margin:.25em 0;display:flex;gap:.25em;flex-wrap:wrap;align-items:center">
   <button id="log-toggle" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Monitor: off</button>
   <button id="log-clear" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Clear</button>
+  <label style="font-size:.8em;color:#555">Lines: <input id="log-max-input" type="number" value="50" min="10" max="9999" style="width:3.5em;font-size:1em;padding:.1em .2em"></label>
 </div>
 <div id="log-output"></div>
 </div>"#,
@@ -1010,11 +1012,12 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("      logToggle.textContent = 'Monitor: off';\n");
         s.push_str("    } else {\n");
         s.push_str("      evtSource = new EventSource('/log-stream');\n");
-        s.push_str("      var LOG_MAX = 500;\n");
+        s.push_str("      var logMaxInput = document.getElementById('log-max-input');\n");
         s.push_str("      evtSource.onmessage = function(e) {\n");
         s.push_str("        var d = document.createElement('div'); d.className = 'log-line'; d.textContent = e.data;\n");
         s.push_str("        logEl.appendChild(d);\n");
-        s.push_str("        while (logEl.childElementCount > LOG_MAX) logEl.removeChild(logEl.firstChild);\n");
+        s.push_str("        var cap = Math.max(10, parseInt(logMaxInput.value) || 50);\n");
+        s.push_str("        while (logEl.childElementCount > cap) logEl.removeChild(logEl.firstChild);\n");
         s.push_str("        logEl.scrollTop = logEl.scrollHeight;\n");
         s.push_str("      };\n");
         s.push_str("      evtSource.onerror = function() {\n");
