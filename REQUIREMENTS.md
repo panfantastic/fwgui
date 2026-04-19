@@ -127,9 +127,9 @@ Improvement of UI now the core feature set is implemented and working.
     - The Monitor tab is only meaningful in running config mode (breakpoints are running-mode only)
 
 * Readable log format
-    - Parse the nft/kernel log line format (`IN= OUT= SRC= DST= PROTO= SPT= DPT=` etc.) into a compact human-readable summary, e.g. `TCP 192.168.1.100:54321 → 10.0.0.1:22  [fwgui-bp-5]`
-    - `tshark` is an acceptable required or optional dependency if it significantly improves parse quality
-    - If `tshark` is present, use it for deeper packet decode; fall back to regex parsing of the nft log fields if not
+    - Parse the nft/kernel log line format (`IN= OUT= SRC= DST= PROTO= SPT= DPT=` etc.) into a compact human-readable summary, e.g. `14:32:01  [bp-5: input]  TCP  192.168.1.100:54321 → 10.0.0.1:22  SYN  TTL=64`
+    - Regex parsing of nft log fields is the baseline (no extra dependencies)
+    - `tshark` may be used as an optional enhancement when available on the system for richer application-layer decode; fall back gracefully to regex parsing if absent
 
 * Reload / restart recovery
     - On **browser reload**, active breakpoints are preserved in the server's in-memory state; `syncBreakpoints()` restores gutter markers and the monitor should auto-restart if breakpoints are active
