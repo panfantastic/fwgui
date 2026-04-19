@@ -83,19 +83,32 @@ Use a toggle or tabbed view to switch between the different modes.
 
 ## v0.6 - Packet test and trace
 
-Running config mode only. Breakpoints are ephemeral — they inject log rules into the live ruleset and are never written to disk or saved config.
+Running config mode only. Breakpoints are ephemeral — they inject log statements into the live ruleset and are never written to disk or saved config.
 
 * Breakpoints
-    - Enable marking lines in the running config editor as breakpoints
-    - Marking a line inserts a `log prefix "fwgui-bp-<handle>: " flags all` rule before that rule's handle (via `nft insert rule ... position <handle>`)
-    - Breakpoint removal deletes the injected log rule by its handle
-    - Add a second side panel on the left for logging output
-    - Add to the right side panel a Log Groups section listing active breakpoints
+    - Enable marking lines in the running config editor as breakpoints via gutter click
+    - Marking a line injects `log prefix "fwgui-bp-<line>: "` into that rule before its verdict (via `nft replace rule ... handle <N> <augmented-rule>`), so only packets matching that specific rule are logged — not all packets at that chain position
+    - Breakpoint removal restores the original rule by inserting the original before the breakpointed rule then deleting the breakpointed handle (`nft insert rule ... position <N>` + `nft delete rule ... handle <N>`)
+    - Server state is only cleared after the nft command succeeds, so a failed clear can be retried
+    - Requires `nf_log_inet` (or `nf_log_ipv4`/`nf_log_ipv6`) kernel modules to be loaded for log output to reach the kernel ring buffer
+    - Add a panel on the left for logging output
+        - Log line cap is configurable live, default 50 lines (old lines evicted FIFO)
+        - Log panel is vertically resizable
+    - Add to the right side panel a Log Groups section listing active breakpoints with per-breakpoint remove buttons
 * Packet detection
-    - When toggled, monitor kernel log (journald / /proc/kmsg) for `fwgui-bp-` prefixed entries
-    - Stream matching log lines to the logging output side panel via SSE
+    - When toggled, monitor kernel log via `/dev/kmsg` (falling back to `journalctl -f -k`) for `fwgui-bp-` prefixed entries
+    - Stream matching log lines to the logging output panel via SSE
+    - A self-test marker is written to `/dev/kmsg` on monitor connect to confirm the pipeline is working
+
+### Implementation notes
+* `nft -a list ruleset` annotates each rule with `# handle N`; line → handle mapping is used to identify which rule to augment
+* Inserting a separate log rule before the target (old approach) was rejected: it logs all traffic reaching that chain position, not just matching traffic
+* The `replace rule` approach injects the log statement into the rule itself before the terminal verdict, preserving per-rule match semantics
 
 ### validate
 * edit ruleset text area must not be empty
 * monitor and clear buttons must be clickable
 * clicking the gutter to set a breakpoint must work
+* only packets matching the breakpointed rule's criteria should appear in the log output
+* clearing a breakpoint must stop log output for that rule
+
