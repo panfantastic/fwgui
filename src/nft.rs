@@ -158,12 +158,15 @@ pub fn insert_breakpoint(rule: &RuleHandle, bp_label: &str) -> Result<u64, NftEr
     Ok(rule.handle)
 }
 
-/// Clear a breakpoint by replacing the rule with its original text (stored in `rule.rule_text`).
+/// Clear a breakpoint by inserting the original rule before the breakpointed one then deleting it.
+/// Using insert+delete rather than `replace rule` avoids any handle-preservation edge cases.
 pub fn remove_breakpoint(rule: &RuleHandle) -> Result<(), NftError> {
     let script = format!(
-        "replace rule {} {} {} handle {} {}\n",
-        rule.table_family, rule.table_name, rule.chain_name, rule.handle, rule.rule_text
+        "insert rule {} {} {} position {} {}\ndelete rule {} {} {} handle {}\n",
+        rule.table_family, rule.table_name, rule.chain_name, rule.handle, rule.rule_text,
+        rule.table_family, rule.table_name, rule.chain_name, rule.handle
     );
+    tracing::debug!(script = %script, "remove_breakpoint");
     run_script(&script)
 }
 

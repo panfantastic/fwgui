@@ -1209,11 +1209,15 @@ pub async fn breakpoint_clear(
     State(state): State<Arc<AppState>>,
     Path(line): Path<usize>,
 ) -> Json<ValidateResponse> {
-    let bp = state.breakpoints.lock().unwrap().remove(&line);
-    match bp {
+    let rule = state.breakpoints.lock().unwrap()
+        .get(&line).map(|bp| bp.rule.clone());
+    match rule {
         None => Json(ValidateResponse { ok: false, error: Some(format!("no breakpoint at line {line}")) }),
-        Some(active) => match nft::remove_breakpoint(&active.rule) {
-            Ok(()) => Json(ValidateResponse { ok: true, error: None }),
+        Some(rule) => match nft::remove_breakpoint(&rule) {
+            Ok(()) => {
+                state.breakpoints.lock().unwrap().remove(&line);
+                Json(ValidateResponse { ok: true, error: None })
+            },
             Err(e) => Json(ValidateResponse { ok: false, error: Some(e.to_string()) }),
         }
     }
