@@ -586,7 +586,7 @@ fn simple_diff_script(a_js: &str, b_js: &str) -> String {
     let mut s = String::from("<script>\n(function() {\n");
     s.push_str("  var a = "); s.push_str(a_js); s.push_str(";\n");
     s.push_str("  var b = "); s.push_str(b_js); s.push_str(";\n");
-    s.push_str("  renderDiffChanged(computeDiff(a, b), document.getElementById('diff-view'));\n");
+    s.push_str("  renderDiff(computeDiff(a, b), document.getElementById('diff-view'));\n");
     s.push_str("})();\n</script>");
     s
 }
