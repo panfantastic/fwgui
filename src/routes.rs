@@ -1022,7 +1022,6 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("    };\n");
         s.push_str("    evtSource.onerror = function() {\n");
         s.push_str("      logToggle.textContent = 'Monitor: off'; evtSource.close(); evtSource = null;\n");
-        s.push_str("      localStorage.removeItem('fwgui-monitor');\n");
         s.push_str("    };\n");
         s.push_str("    logToggle.textContent = 'Monitor: on';\n");
         s.push_str("    localStorage.setItem('fwgui-monitor', '1');\n");
