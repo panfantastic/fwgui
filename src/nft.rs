@@ -170,8 +170,29 @@ pub fn remove_breakpoint(rule: &RuleHandle) -> Result<(), NftError> {
     run_script(&script)
 }
 
-/// On server startup, remove any stale `fwgui-bp-` log rules left in the live
-/// ruleset from a previous run.  Failures are logged but do not abort startup.
+/// Strip the injected `log prefix "fwgui-bp-…"` statement from a rule text,
+/// recovering the original rule.
+fn strip_bp_log(rule_text: &str) -> String {
+    const PREFIX: &str = "log prefix \"fwgui-bp-";
+    let Some(start) = rule_text.find(PREFIX) else { return rule_text.to_string(); };
+    let after_prefix = &rule_text[start + PREFIX.len()..];
+    let Some(close_q) = after_prefix.find('"') else { return rule_text.to_string(); };
+    let mut end = start + PREFIX.len() + close_q + 1;
+    // consume the space that separates log stmt from the verdict (if present)
+    if rule_text.as_bytes().get(end) == Some(&b' ') { end += 1; }
+    let before = rule_text[..start].trim_end();
+    let after  = rule_text[end..].trim_start();
+    match (before.is_empty(), after.is_empty()) {
+        (true,  true)  => String::new(),
+        (true,  false) => after.to_string(),
+        (false, true)  => before.to_string(),
+        (false, false) => format!("{before} {after}"),
+    }
+}
+
+/// On server startup, restore any stale `fwgui-bp-` rules left in the live
+/// ruleset from a previous run by stripping the injected log statement and
+/// restoring the original rule via insert+delete.
 pub fn cleanup_stale_breakpoints() {
     let text = match get_ruleset_annotated() {
         Ok(t) => t,
@@ -180,16 +201,20 @@ pub fn cleanup_stale_breakpoints() {
     let handles = parse_ruleset_handles(&text);
     for rule in handles.values() {
         if rule.rule_text.contains("fwgui-bp-") {
-            // The stored rule_text IS the breakpointed rule; original is unknown,
-            // so just delete the rule outright.
+            let original = strip_bp_log(&rule.rule_text);
+            if original.is_empty() {
+                tracing::warn!("cleanup: could not recover original for handle {}", rule.handle);
+                continue;
+            }
             let script = format!(
-                "delete rule {} {} {} handle {}\n",
+                "insert rule {} {} {} position {} {}\ndelete rule {} {} {} handle {}\n",
+                rule.table_family, rule.table_name, rule.chain_name, rule.handle, original,
                 rule.table_family, rule.table_name, rule.chain_name, rule.handle
             );
             if let Err(e) = run_script(&script) {
                 tracing::warn!("cleanup stale bp handle {}: {e}", rule.handle);
             } else {
-                tracing::info!("removed stale breakpoint rule handle {}", rule.handle);
+                tracing::info!("restored stale breakpoint rule handle {}", rule.handle);
             }
         }
     }
@@ -517,5 +542,29 @@ table ip nat { # handle 2
         assert_eq!(extract_handle("table inet filter { # handle 1"), Some(1));
         assert_eq!(extract_handle("\t\ttype filter hook input priority 0; policy drop;"), None);
         assert_eq!(extract_handle(""), None);
+    }
+
+    #[test]
+    fn test_strip_bp_log() {
+        // log before verdict
+        assert_eq!(
+            strip_bp_log(r#"tcp dport 22 log prefix "fwgui-bp-5: " accept"#),
+            "tcp dport 22 accept"
+        );
+        // log appended (no verdict found originally)
+        assert_eq!(
+            strip_bp_log(r#"counter log prefix "fwgui-bp-3: ""#),
+            "counter"
+        );
+        // log is the whole rule (bare verdict that became leading log)
+        assert_eq!(
+            strip_bp_log(r#"log prefix "fwgui-bp-7: " drop"#),
+            "drop"
+        );
+        // no log statement — unchanged
+        assert_eq!(
+            strip_bp_log("tcp dport 22 accept"),
+            "tcp dport 22 accept"
+        );
     }
 }
