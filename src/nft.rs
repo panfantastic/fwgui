@@ -170,6 +170,84 @@ pub fn remove_breakpoint(rule: &RuleHandle) -> Result<(), NftError> {
     run_script(&script)
 }
 
+/// On server startup, remove any stale `fwgui-bp-` log rules left in the live
+/// ruleset from a previous run.  Failures are logged but do not abort startup.
+pub fn cleanup_stale_breakpoints() {
+    let text = match get_ruleset_annotated() {
+        Ok(t) => t,
+        Err(e) => { tracing::warn!("cleanup_stale_breakpoints: {e}"); return; }
+    };
+    let handles = parse_ruleset_handles(&text);
+    for rule in handles.values() {
+        if rule.rule_text.contains("fwgui-bp-") {
+            // The stored rule_text IS the breakpointed rule; original is unknown,
+            // so just delete the rule outright.
+            let script = format!(
+                "delete rule {} {} {} handle {}\n",
+                rule.table_family, rule.table_name, rule.chain_name, rule.handle
+            );
+            if let Err(e) = run_script(&script) {
+                tracing::warn!("cleanup stale bp handle {}: {e}", rule.handle);
+            } else {
+                tracing::info!("removed stale breakpoint rule handle {}", rule.handle);
+            }
+        }
+    }
+}
+
+/// Parse a kernel log line (from `/dev/kmsg` or journalctl) containing nftables
+/// LOG target output into a compact human-readable summary.
+///
+/// Input example:
+///   `IN=eth0 OUT= MAC=... SRC=1.2.3.4 DST=5.6.7.8 LEN=52 ... PROTO=TCP SPT=54321 DPT=22 ... SYN`
+///
+/// Output example:
+///   `TCP 1.2.3.4:54321 → 5.6.7.8:22  in=eth0  SYN`
+pub fn format_log_line(msg: &str) -> String {
+    fn kv<'a>(msg: &'a str, key: &str) -> &'a str {
+        let needle = format!("{key}=");
+        msg.find(needle.as_str())
+            .map(|i| {
+                let rest = &msg[i + needle.len()..];
+                rest.split_ascii_whitespace().next().unwrap_or("")
+            })
+            .unwrap_or("")
+    }
+
+    let proto = kv(msg, "PROTO");
+    let src   = kv(msg, "SRC");
+    let dst   = kv(msg, "DST");
+    let spt   = kv(msg, "SPT");
+    let dpt   = kv(msg, "DPT");
+    let iif   = kv(msg, "IN");
+    let oif   = kv(msg, "OUT");
+
+    if proto.is_empty() && src.is_empty() {
+        return msg.to_string();
+    }
+
+    let src_str = if spt.is_empty() { src.to_string() } else { format!("{src}:{spt}") };
+    let dst_str = if dpt.is_empty() { dst.to_string() } else { format!("{dst}:{dpt}") };
+
+    let iface = match (!iif.is_empty(), !oif.is_empty()) {
+        (true, true)  => format!("  {iif}→{oif}"),
+        (true, false) => format!("  in={iif}"),
+        (false, true) => format!("  out={oif}"),
+        _             => String::new(),
+    };
+
+    // TCP flags present in the message
+    let flags: Vec<&str> = ["SYN","ACK","FIN","RST","URG","PSH"]
+        .iter().copied()
+        .filter(|&f| {
+            msg.split_ascii_whitespace().any(|w| w == f)
+        })
+        .collect();
+    let flag_str = if flags.is_empty() { String::new() } else { format!("  {}", flags.join(",")) };
+
+    format!("{proto}  {src_str} → {dst_str}{iface}{flag_str}")
+}
+
 fn extract_handle(line: &str) -> Option<u64> {
     let idx = line.rfind("# handle ")?;
     line[idx + "# handle ".len()..].split_ascii_whitespace().next()?.parse().ok()

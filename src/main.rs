@@ -22,6 +22,7 @@ async fn main() {
 
     let config = state::Config::from_env();
     let port = config.port;
+    nft::cleanup_stale_breakpoints();
     let app_state = Arc::new(state::AppState::new(config));
 
     let app = Router::new()

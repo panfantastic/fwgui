@@ -525,29 +525,48 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         ""
     };
 
-    let (layout_cls, log_panel) = if mode == EditMode::Running {
+    // The log container (controls + output) is a single div that gets moved
+    // between the narrow log-panel and the full-width monitor view by JS.
+    let (layout_cls, log_panel, monitor_tab_btn, monitor_view) = if mode == EditMode::Running {
         (
             "editor-layout editor-layout-bp",
-            r#"<div class="log-panel">
-<h4>Log Output</h4>
+            r#"<div class="log-panel" id="log-panel-slot">
+<h4 style="margin-top:0">Log Output</h4>
+<button type="button" class="btn-neutral" id="go-monitor-btn"
+  style="font-size:.75em;padding:.15em .35em;margin-bottom:.4em" title="Full view">⛶ Full view</button>
+</div>"#,
+            r#"<button id="monitor-tab-btn" class="tab-btn" type="button">Monitor</button>"#,
+            r#"<div id="monitor-view" style="display:none;padding:.5em 1em">
+<h2 style="margin-top:.25em">Monitor</h2>
+</div>"#,
+        )
+    } else {
+        ("editor-layout", "", "", "")
+    };
+
+    // Shared log container — lives here in the DOM initially, JS moves it.
+    let log_container = if mode == EditMode::Running {
+        r#"<div id="log-container">
 <div style="margin:.25em 0;display:flex;gap:.25em;flex-wrap:wrap;align-items:center">
   <button id="log-toggle" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Monitor: off</button>
   <button id="log-clear" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Clear</button>
   <label style="font-size:.8em;color:#555">Lines: <input id="log-max-input" type="number" value="50" min="10" max="9999" style="width:3.5em;font-size:1em;padding:.1em .2em"></label>
 </div>
 <div id="log-output"></div>
-</div>"#,
-        )
+</div>"#
     } else {
-        ("editor-layout", "")
+        ""
     };
 
     format!(
         r#"<div class="mode-tabs">
   <a href="/" class="{run_cls}">Running config</a>
   <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
+  {monitor_tab_btn}
 </div>
-<div class="{layout_cls}">
+{log_container}
+{monitor_view}
+<div id="editor-view" class="{layout_cls}">
 {log_panel}
 <div>
 {error_html}<h2>{heading}</h2>
@@ -933,16 +952,48 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
 
     // Breakpoint and log stream helpers (running config mode only).
     if is_running {
-        // Declare DOM refs first so showBpError can reference logEl.
+        // DOM refs.
         s.push_str("  var logEl = document.getElementById('log-output');\n");
         s.push_str("  var logToggle = document.getElementById('log-toggle');\n");
         s.push_str("  var logClear = document.getElementById('log-clear');\n");
+        s.push_str("  var logMaxInput = document.getElementById('log-max-input');\n");
+        s.push_str("  var logContainer = document.getElementById('log-container');\n");
+        s.push_str("  var logPanelSlot = document.getElementById('log-panel-slot');\n");
+        s.push_str("  var editorView = document.getElementById('editor-view');\n");
+        s.push_str("  var monitorView = document.getElementById('monitor-view');\n");
+        s.push_str("  var monitorTabBtn = document.getElementById('monitor-tab-btn');\n");
+        s.push_str("  var goMonitorBtn = document.getElementById('go-monitor-btn');\n");
+
+        // Place log container in the narrow panel on load.
+        s.push_str("  logPanelSlot.appendChild(logContainer);\n");
 
         s.push_str("  function showBpError(msg) {\n");
         s.push_str("    var d = document.createElement('div'); d.className = 'log-line'; d.style.color = '#f88';\n");
         s.push_str("    d.textContent = 'Breakpoint error: ' + msg;\n");
         s.push_str("    logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;\n");
         s.push_str("  }\n");
+
+        // Monitor tab switching — moves log-container without reloading the page,
+        // so the SSE connection and log entries are preserved.
+        s.push_str("  var monitorTabActive = false;\n");
+        s.push_str("  function activateMonitorTab() {\n");
+        s.push_str("    monitorTabActive = true;\n");
+        s.push_str("    editorView.style.display = 'none';\n");
+        s.push_str("    monitorView.appendChild(logContainer);\n");
+        s.push_str("    monitorView.style.display = '';\n");
+        s.push_str("    monitorTabBtn.classList.add('active');\n");
+        s.push_str("  }\n");
+        s.push_str("  function activateEditorTab() {\n");
+        s.push_str("    monitorTabActive = false;\n");
+        s.push_str("    monitorView.style.display = 'none';\n");
+        s.push_str("    logPanelSlot.appendChild(logContainer);\n");
+        s.push_str("    editorView.style.display = '';\n");
+        s.push_str("    monitorTabBtn.classList.remove('active');\n");
+        s.push_str("  }\n");
+        s.push_str("  monitorTabBtn.addEventListener('click', function() {\n");
+        s.push_str("    if (monitorTabActive) activateEditorTab(); else activateMonitorTab();\n");
+        s.push_str("  });\n");
+        s.push_str("  goMonitorBtn.addEventListener('click', activateMonitorTab);\n");
 
         s.push_str("  function updateBpSidebar(list) {\n");
         s.push_str("    var el = document.getElementById('bp-list');\n");
@@ -966,7 +1017,32 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("    }\n");
         s.push_str("  }\n");
 
-        // Sync gutter + sidebar from server's breakpoint list.
+        // SSE monitor start/stop.
+        s.push_str("  var evtSource = null;\n");
+        s.push_str("  function startMonitor() {\n");
+        s.push_str("    if (evtSource) return;\n");
+        s.push_str("    evtSource = new EventSource('/log-stream');\n");
+        s.push_str("    evtSource.onmessage = function(e) {\n");
+        s.push_str("      var d = document.createElement('div'); d.className = 'log-line'; d.textContent = e.data;\n");
+        s.push_str("      logEl.appendChild(d);\n");
+        s.push_str("      var cap = Math.max(10, parseInt(logMaxInput.value) || 50);\n");
+        s.push_str("      while (logEl.childElementCount > cap) logEl.removeChild(logEl.firstChild);\n");
+        s.push_str("      logEl.scrollTop = logEl.scrollHeight;\n");
+        s.push_str("    };\n");
+        s.push_str("    evtSource.onerror = function() {\n");
+        s.push_str("      logToggle.textContent = 'Monitor: off'; evtSource.close(); evtSource = null;\n");
+        s.push_str("    };\n");
+        s.push_str("    logToggle.textContent = 'Monitor: on';\n");
+        s.push_str("  }\n");
+        s.push_str("  function stopMonitor() {\n");
+        s.push_str("    if (!evtSource) return;\n");
+        s.push_str("    evtSource.close(); evtSource = null; logToggle.textContent = 'Monitor: off';\n");
+        s.push_str("  }\n");
+        s.push_str("  logToggle.addEventListener('click', function() { if (evtSource) stopMonitor(); else startMonitor(); });\n");
+        s.push_str("  logClear.addEventListener('click', function() { logEl.innerHTML = ''; });\n");
+
+        // Sync gutter + sidebar from server list.
+        // On page load: auto-start monitor if breakpoints already exist (reload recovery).
         s.push_str("  function syncBreakpoints() {\n");
         s.push_str("    fetch('/breakpoints').then(function(r){return r.json();}).then(function(list){\n");
         s.push_str("      var ranges = [];\n");
@@ -977,17 +1053,21 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("      ranges.sort(function(a,b){return a.from-b.from;});\n");
         s.push_str("      view.dispatch({ effects: bpReset.of(RangeSet.of(ranges, true)) });\n");
         s.push_str("      updateBpSidebar(list);\n");
+        s.push_str("      if (list.length && !evtSource) startMonitor();\n");
         s.push_str("    }).catch(function(){});\n");
         s.push_str("  }\n");
 
-        // pos = doc position (line.from); zeroLine = 0-based line number for server.
+        // pos = doc position; zeroLine = 0-based line for server.
+        // Auto-start monitor on first breakpoint (when no others exist).
         s.push_str("  function setBreakpoint(v, pos, zeroLine) {\n");
+        s.push_str("    var isFirst = (v.state.field(bpField).size === 0);\n");
         s.push_str("    fetch('/breakpoint', {\n");
         s.push_str("      method: 'POST', headers: {'Content-Type':'application/json'},\n");
         s.push_str("      body: JSON.stringify({line: zeroLine})\n");
         s.push_str("    }).then(function(r){return r.json();}).then(function(data){\n");
         s.push_str("      if (data.ok) {\n");
         s.push_str("        v.dispatch({ effects: bpToggle.of({pos:pos, on:true}) });\n");
+        s.push_str("        if (isFirst && !evtSource) startMonitor();\n");
         s.push_str("        syncBreakpoints();\n");
         s.push_str("      } else { showBpError(data.error || 'unknown'); }\n");
         s.push_str("    }).catch(function(e){ showBpError(String(e)); });\n");
@@ -1003,31 +1083,6 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
         s.push_str("        } else { showBpError(data.error || 'unknown'); }\n");
         s.push_str("      }).catch(function(){});\n");
         s.push_str("  }\n");
-
-        // SSE log monitoring.
-        s.push_str("  var evtSource = null;\n");
-        s.push_str("  logToggle.addEventListener('click', function() {\n");
-        s.push_str("    if (evtSource) {\n");
-        s.push_str("      evtSource.close(); evtSource = null;\n");
-        s.push_str("      logToggle.textContent = 'Monitor: off';\n");
-        s.push_str("    } else {\n");
-        s.push_str("      evtSource = new EventSource('/log-stream');\n");
-        s.push_str("      var logMaxInput = document.getElementById('log-max-input');\n");
-        s.push_str("      evtSource.onmessage = function(e) {\n");
-        s.push_str("        var d = document.createElement('div'); d.className = 'log-line'; d.textContent = e.data;\n");
-        s.push_str("        logEl.appendChild(d);\n");
-        s.push_str("        var cap = Math.max(10, parseInt(logMaxInput.value) || 50);\n");
-        s.push_str("        while (logEl.childElementCount > cap) logEl.removeChild(logEl.firstChild);\n");
-        s.push_str("        logEl.scrollTop = logEl.scrollHeight;\n");
-        s.push_str("      };\n");
-        s.push_str("      evtSource.onerror = function() {\n");
-        s.push_str("        logToggle.textContent = 'Monitor: off';\n");
-        s.push_str("        evtSource.close(); evtSource = null;\n");
-        s.push_str("      };\n");
-        s.push_str("      logToggle.textContent = 'Monitor: on';\n");
-        s.push_str("    }\n");
-        s.push_str("  });\n");
-        s.push_str("  logClear.addEventListener('click', function() { logEl.innerHTML = ''; });\n");
 
         s.push_str("  syncBreakpoints();\n");
     }
@@ -1265,8 +1320,11 @@ pub async fn log_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> 
                             if line.starts_with(' ') { continue; } // metadata continuation
                             // /dev/kmsg format: "priority,seq,ts,flag;message"
                             let msg = line.splitn(2, ';').nth(1).unwrap_or(&line);
-                            if msg.contains("fwgui-bp-") && tx.send(msg.to_string()).await.is_err() {
-                                break;
+                            if msg.contains("fwgui-bp-") {
+                                let label = msg.splitn(2, ':').next().unwrap_or("").trim();
+                                let body  = msg.splitn(2, ':').nth(1).unwrap_or(msg).trim();
+                                let formatted = format!("[{}]  {}", label, nft::format_log_line(body));
+                                if tx.send(formatted).await.is_err() { break; }
                             }
                         }
                         Ok(None) | Err(_) => break,
@@ -1286,8 +1344,11 @@ pub async fn log_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> 
                         if let Some(stdout) = c.stdout.take() {
                             let mut lines = BufReader::new(stdout).lines();
                             while let Ok(Some(line)) = lines.next_line().await {
-                                if line.contains("fwgui-bp-") && tx.send(line).await.is_err() {
-                                    break;
+                                if line.contains("fwgui-bp-") {
+                                    let label = line.splitn(2, ':').next().unwrap_or("").trim();
+                                    let body  = line.splitn(2, ':').nth(1).unwrap_or(&line).trim();
+                                    let formatted = format!("[{}]  {}", label, nft::format_log_line(body));
+                                    if tx.send(formatted).await.is_err() { break; }
                                 }
                             }
                         }
