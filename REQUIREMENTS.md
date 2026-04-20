@@ -189,6 +189,10 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
   named+offset string (`"filter + 10"`)
 * Client renders DOT → SVG using `@viz-js/viz` (Graphviz compiled to WASM, inline bundle)
 * Pan/zoom via `@panzoom/panzoom`; initial render fits the graph to the viewport
+* SVG is sized to 100%×100% of the container; the SVG's own `viewBox` +
+  `preserveAspectRatio="xMidYMid meet"` (SVG default) centres and letterboxes the content
+  without any manual scale/pan calculation — panzoom starts at scale=1, pan=(0,0)
+* Fit button and post-render reset call `pz.zoom(1); pz.pan(0,0)` to restore the initial view
 * Separate JS bundle (`graph-bundle.js`) keeps the editor page free of the ~2 MB WASM payload
 
 ### Validation
@@ -198,6 +202,7 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
 * Graph renders for chains at canonical priorities, between canonical priorities, and far outside them
 * Pan and pinch-zoom work; scroll-wheel zooms
 * Zoom-out must allow the graph to shrink well below the viewport size (minScale 0.01, no contain constraint)
+* On load, the full graph is visible and centred in the viewport with no content off-screen
 * Chains at non-standard priorities visually stand out relative to ghost markers
 
 ## v0.10.1 — Multi-layer graph, collapse/expand, clickable chains
@@ -240,6 +245,9 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
   excluded from the DOT but still reported so the pill bar shows all toggles
 * Panzoom instance is destroyed and re-created on each re-render; wheel listener is tracked
   and removed to avoid stacking duplicates
+* SVG sizing: `width="100%" height="100%"` fills the container; the SVG viewBox centres the
+  content — do not attempt to compute manual pan offsets, as Graphviz outputs pt units which
+  differ from CSS pixels and panzoom's coordinate model varies by transform style
 
 ### Validation
 
@@ -248,4 +256,5 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
 * Hiding a family row removes it cleanly; showing it restores it
 * Clicking a chain row navigates to `/?mode=running`
 * Chain TD IDs are present in the rendered SVG DOM
+* On load and after reload/pill toggle, the full graph is centred and fully visible — no content clipped by the left or right edge
 
