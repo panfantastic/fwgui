@@ -104,6 +104,25 @@ pub async fn validate(Form(form): Form<ValidateForm>) -> Json<ValidateResponse> 
     }
 }
 
+pub async fn graph_dot() -> axum::response::Response {
+    use axum::http::StatusCode;
+    match crate::graph::build_dot() {
+        Ok(dot) => axum::response::Response::builder()
+            .header(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(axum::body::Body::from(dot))
+            .unwrap(),
+        Err(e) => axum::response::Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .body(axum::body::Body::from(e))
+            .unwrap(),
+    }
+}
+
+pub async fn graph_page() -> Html<String> {
+    Html(render_graph_page())
+}
+
 pub async fn index(
     State(state): State<Arc<AppState>>,
     Query(q): Query<IndexQuery>,
@@ -565,6 +584,7 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
   <a href="/" class="{run_cls}">Running config</a>
   <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
   <button id="monitor-tab-btn" class="{mon_cls}" type="button">Monitor</button>
+  <a href="/graph" class="tab-btn">Graph</a>
 </div>
 <div id="monitor-view" style="display:none">
 <h2>Monitor</h2>
@@ -1374,6 +1394,112 @@ pub async fn log_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> 
         }
     });
     Sse::new(LogEventStream(rx)).keep_alive(KeepAlive::default())
+}
+
+fn render_graph_page() -> String {
+    let script = r#"<script type="module">
+import { vizInstance, Panzoom } from '/static/graph-bundle.js';
+
+const container = document.getElementById('graph-container');
+const status    = document.getElementById('graph-status');
+
+async function loadGraph() {
+  status.textContent = 'Loading…';
+  let dot;
+  try {
+    const resp = await fetch('/api/graph/dot');
+    if (!resp.ok) throw new Error(await resp.text());
+    dot = await resp.text();
+  } catch (e) {
+    status.textContent = 'Error fetching graph: ' + e.message;
+    return;
+  }
+
+  let svg;
+  try {
+    const viz = await vizInstance();
+    svg = viz.renderSVGElement(dot);
+  } catch (e) {
+    status.textContent = 'Render error: ' + e.message;
+    return;
+  }
+
+  // Size the SVG to its natural Graphviz dimensions so panzoom works correctly.
+  const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
+  const natW = vb[2] || svg.width.baseVal.value || 800;
+  const natH = vb[3] || svg.height.baseVal.value || 600;
+  svg.setAttribute('width', natW);
+  svg.setAttribute('height', natH);
+
+  container.innerHTML = '';
+  container.appendChild(svg);
+
+  // Fit to viewport on first render.
+  const cw = container.clientWidth  || 800;
+  const ch = container.clientHeight || 600;
+  const scale = Math.min(cw / natW, ch / natH) * 0.92;
+  const pz = Panzoom(svg, {
+    startScale: scale,
+    minScale:   0.01,
+    maxScale:   20,
+  });
+  pz.pan((cw - natW * scale) / 2, (ch - natH * scale) / 2, { animate: false });
+  container.addEventListener('wheel', pz.zoomWithWheel);
+
+  document.getElementById('btn-fit').onclick = function() {
+    const scale2 = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
+    pz.zoom(scale2, { animate: true });
+    pz.pan((container.clientWidth - natW * scale2) / 2, (container.clientHeight - natH * scale2) / 2, { animate: true });
+  };
+
+  status.textContent = '';
+}
+
+loadGraph();
+</script>"#;
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fwgui — Graph</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: monospace; background: #12121e; color: #ccd; display: flex; flex-direction: column; height: 100vh; }}
+  .mode-tabs {{ display: flex; padding: .4em .75em 0; border-bottom: 2px solid #334; background: #1a1a2e; flex-shrink: 0; }}
+  .tab-btn {{ padding: .4em 1.2em; text-decoration: none; color: #778; border: 1px solid transparent;
+              border-bottom: none; margin: 0 0 -2px; border-radius: 3px 3px 0 0; background: transparent;
+              font-family: inherit; font-size: 1em; cursor: pointer; }}
+  .tab-btn.active {{ color: #ccd; background: #12121e; border-color: #334; border-bottom-color: #12121e; font-weight: bold; }}
+  .tab-btn:hover:not(.active) {{ background: #222233; color: #aab; }}
+  .toolbar {{ padding: .4em .75em; background: #1a1a2e; border-bottom: 1px solid #334; flex-shrink: 0;
+              display: flex; align-items: center; gap: .75em; }}
+  .toolbar button {{ font-family: inherit; font-size: .9em; padding: .25em .8em; cursor: pointer;
+                     background: #2a2a44; color: #aab; border: 1px solid #445; border-radius: 3px; }}
+  .toolbar button:hover {{ background: #333355; }}
+  #graph-status {{ color: #778; font-size: .9em; }}
+  #graph-container {{ flex: 1; overflow: hidden; position: relative; cursor: grab; }}
+  #graph-container:active {{ cursor: grabbing; }}
+  #graph-container svg {{ display: block; }}
+</style>
+</head>
+<body>
+<div class="mode-tabs">
+  <a href="/" class="tab-btn">Running config</a>
+  <a href="/?mode=saved" class="tab-btn">Saved config</a>
+  <a href="/graph" class="tab-btn active">Graph</a>
+</div>
+<div class="toolbar">
+  <button id="btn-fit">Fit</button>
+  <button onclick="location.reload()">Reload</button>
+  <span id="graph-status">Loading…</span>
+</div>
+<div id="graph-container"></div>
+{script}
+</body>
+</html>"#
+    )
 }
 
 fn url_encode(s: &str) -> String {

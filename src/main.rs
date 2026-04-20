@@ -1,3 +1,4 @@
+mod graph;
 mod nft;
 mod routes;
 mod state;
@@ -7,12 +8,21 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 static CM_BUNDLE: &[u8] = include_bytes!("../static/cm-bundle.js");
+static GRAPH_BUNDLE: &[u8] = include_bytes!("../static/graph-bundle.js");
 
 async fn serve_cm_bundle() -> Response<axum::body::Body> {
     Response::builder()
         .header(header::CONTENT_TYPE, "application/javascript; charset=utf-8")
         .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
         .body(axum::body::Body::from(CM_BUNDLE))
+        .unwrap()
+}
+
+async fn serve_graph_bundle() -> Response<axum::body::Body> {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/javascript; charset=utf-8")
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(axum::body::Body::from(GRAPH_BUNDLE))
         .unwrap()
 }
 
@@ -27,7 +37,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(routes::index))
+        .route("/graph", get(routes::graph_page))
+        .route("/api/graph/dot", get(routes::graph_dot))
         .route("/static/cm-bundle.js", get(serve_cm_bundle))
+        .route("/static/graph-bundle.js", get(serve_graph_bundle))
         .route("/stage", post(routes::stage))
         .route("/promote", post(routes::promote))
         .route("/acknowledge", post(routes::acknowledge))

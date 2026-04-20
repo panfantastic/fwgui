@@ -9,3 +9,8 @@ node_modules/.bin/esbuild cm-entry.js \
   --bundle --format=esm --minify --target=es2020 \
   --outfile=static/cm-bundle.js
 echo "static/cm-bundle.js updated ($(wc -c < static/cm-bundle.js) bytes)"
+
+node_modules/.bin/esbuild graph-entry.js \
+  --bundle --format=esm --minify --target=es2020 \
+  --outfile=static/graph-bundle.js
+echo "static/graph-bundle.js updated ($(wc -c < static/graph-bundle.js) bytes)"

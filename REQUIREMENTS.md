@@ -151,3 +151,52 @@ UI cleanup of layout inconsistencies
 * Add `font-family: inherit` to global button rule so all buttons use the page monospace font
 * Fix Monitor tab alignment: `margin: 0 0 -2px` on `.tab-btn` overrides the global `button` margin so the Monitor `<button>` tab sits flush with the `<a>` tabs
 * Set `background: transparent` on `.tab-btn` to suppress the browser UA button background
+
+## v0.9
+
+* nftables syntax highlighting in the CodeMirror editor
+    - Implement a custom `StreamLanguage` tokenizer for nftables
+    - Highlight: keywords (table, chain, rule, type, hook, policy, etc.), address families (ip, ip6, inet, arp, bridge, netdev), verdict statements (accept, drop, reject, return, continue, goto, jump), string literals, numeric literals (including hex/CIDR), comments (`#`), and operators/punctuation
+    - Highlighting applies to the editing view (both running and saved config modes); diff views are read-only and do not require it
+
+## v0.10 — Graph view
+
+Interactive graph visualisation of the running ruleset mapped onto the Linux netfilter traversal.
+
+### Structure
+
+* Follows the Jan Engelhardt netfilter packet flow diagram (INPUT PATH / FORWARD PATH / OUTPUT PATH)
+* Scope for v0.10: Network Layer hooks only (ip/ip6/inet) — bridge/ARP/netdev are future work
+* Five hook nodes: PREROUTING → INPUT / FORWARD → POSTROUTING, with LOCAL PROCESS between INPUT and OUTPUT
+* Each hook node contains the user's base chains attached to that hook, sorted by priority
+* Ghost reference rows mark the canonical named priority positions within each hook node so
+  out-of-place chains are visually obvious
+
+### Priority display
+
+* Chains display priority relative to the nearest named symbolic priority:
+  `mangle+5`, `filter−10`, `raw` (exact), not raw integers
+* Named priorities per hook:
+  - prerouting: raw(−300), mangle(−150), dstnat(−100), filter(0), security(50)
+  - input / forward: raw(−300)*, mangle(−150), filter(0), security(50)  *(input only)
+  - output: raw(−300), mangle(−150), filter(0), security(50), srcnat(100)
+  - postrouting: mangle(−150), filter(0), srcnat(100)
+
+### Technology
+
+* Server generates a DOT/Graphviz string via `GET /api/graph/dot` (reads `nft -j list ruleset`)
+* `nft -j` priority field handled in all three forms: integer, named string (`"filter"`),
+  named+offset string (`"filter + 10"`)
+* Client renders DOT → SVG using `@viz-js/viz` (Graphviz compiled to WASM, inline bundle)
+* Pan/zoom via `@panzoom/panzoom`; initial render fits the graph to the viewport
+* Separate JS bundle (`graph-bundle.js`) keeps the editor page free of the ~2 MB WASM payload
+
+### Validation
+
+* Graph tab visible from any page state (links to `/graph`)
+* Graph renders for a ruleset with no user chains (shows ghost reference rows only)
+* Graph renders for chains at canonical priorities, between canonical priorities, and far outside them
+* Pan and pinch-zoom work; scroll-wheel zooms
+* Zoom-out must allow the graph to shrink well below the viewport size (minScale 0.01, no contain constraint)
+* Chains at non-standard priorities visually stand out relative to ghost markers
+
