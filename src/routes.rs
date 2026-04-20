@@ -1420,10 +1420,9 @@ const pillBar   = document.getElementById('pill-bar');
 
 let pz = null;
 let wheelHandler = null;
-let natW = 800, natH = 600;
 const hidden = new Set();
 
-async function loadGraph(fitView) {
+async function loadGraph() {
   status.textContent = 'Loading\u2026';
   const hideParam = [...hidden].join(',');
   const url = hideParam ? '/api/graph/dot?hide=' + encodeURIComponent(hideParam) : '/api/graph/dot';
@@ -1452,25 +1451,18 @@ async function loadGraph(fitView) {
 
   if (pz) { pz.destroy(); pz = null; }
   if (wheelHandler) { container.removeEventListener('wheel', wheelHandler); wheelHandler = null; }
+
+  // Size the SVG to fill the container exactly.
+  // The SVG viewBox + preserveAspectRatio="xMidYMid meet" (SVG default) centres the
+  // content and letterboxes to fit — no manual scale/pan calculation needed.
+  svg.setAttribute('width',  '100%');
+  svg.setAttribute('height', '100%');
+  svg.style.display = 'block';
+
   container.innerHTML = '';
   container.appendChild(svg);
 
-  // Read actual rendered pixel size BEFORE overriding attributes.
-  // Graphviz outputs dimensions in points (pt); getBoundingClientRect gives true CSS pixels,
-  // so the scale calculation is accurate regardless of the pt→px conversion (~1.333).
-  const rect = svg.getBoundingClientRect();
-  natW = rect.width  || 800;
-  natH = rect.height || 600;
-  // Lock the SVG to exact pixel values so panzoom's coordinate space is 1:1 with screen pixels.
-  svg.setAttribute('width',  natW);
-  svg.setAttribute('height', natH);
-
-  const cw = container.clientWidth  || 800;
-  const ch = container.clientHeight || 600;
-  const initScale = fitView ? Math.min(cw / natW, ch / natH) * 0.92 : 1;
-  const initX     = fitView ? (cw - natW * initScale) / (2 * initScale) : 0;
-  const initY     = fitView ? (ch - natH * initScale) / (2 * initScale) : 0;
-  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: initScale, startX: initX, startY: initY });
+  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: 1, startX: 0, startY: 0 });
   wheelHandler = pz.zoomWithWheel;
   container.addEventListener('wheel', wheelHandler);
   status.textContent = '';
@@ -1478,9 +1470,8 @@ async function loadGraph(fitView) {
 
 function doFit(animate) {
   if (!pz) return;
-  const scale = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
-  pz.zoom(scale, { animate });
-  pz.pan((container.clientWidth - natW * scale) / (2 * scale), (container.clientHeight - natH * scale) / (2 * scale), { animate });
+  pz.zoom(1, { animate });
+  pz.pan(0, 0, { animate });
 }
 
 function buildPills(families) {
@@ -1494,16 +1485,16 @@ function buildPills(families) {
     btn.onclick = function() {
       if (hidden.has(fam)) { hidden.delete(fam); btn.classList.add('active'); }
       else                  { hidden.add(fam);    btn.classList.remove('active'); }
-      loadGraph(true);
+      loadGraph();
     };
     pillBar.appendChild(btn);
   }
 }
 
 document.getElementById('btn-fit').onclick    = function() { doFit(true); };
-document.getElementById('btn-reload').onclick = function() { loadGraph(true); };
+document.getElementById('btn-reload').onclick = function() { loadGraph(); };
 
-loadGraph(true);
+loadGraph();
 </script>"#;
 
     format!(r#"<!DOCTYPE html>
