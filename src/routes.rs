@@ -1461,11 +1461,14 @@ async function loadGraph(fitView) {
   container.innerHTML = '';
   container.appendChild(svg);
 
-  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20 });
+  const cw = container.clientWidth  || 800;
+  const ch = container.clientHeight || 600;
+  const initScale = fitView ? Math.min(cw / natW, ch / natH) * 0.92 : 1;
+  const initX     = fitView ? (cw - natW * initScale) / 2 : 0;
+  const initY     = fitView ? (ch - natH * initScale) / 2 : 0;
+  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: initScale, startX: initX, startY: initY });
   wheelHandler = pz.zoomWithWheel;
   container.addEventListener('wheel', wheelHandler);
-
-  if (fitView) doFit(false);
   status.textContent = '';
 }
 
