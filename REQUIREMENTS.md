@@ -136,3 +136,18 @@ Improvement of UI now the core feature set is implemented and working.
     - On **server restart**, scan `nft -a list ruleset` at startup for rules containing `fwgui-bp-` and remove them (insert+delete) to clean up stale injected log statements
     - Server-side persistent state (e.g. a state file) is acceptable if it simplifies recovery
 
+## v0.8
+
+UI cleanup of layout inconsistencies
+
+* Replace scattered inline styles with named CSS classes throughout
+* Add `.btn-sm` for consistent small button sizing across log controls, sidebar help, and monitor button
+* Add `.log-controls` flex container to normalise log panel controls layout
+* Add `.form-btns` flex container for editor action buttons (Validate / Stage)
+* Make `.actions` a flex container so Promote/Clear and Acknowledge buttons have consistent spacing without inline `display:inline` on forms
+* Move monitor view padding and h2 margin to CSS (`#monitor-view`, `#monitor-view h2`)
+* Add `.sb-help`, `.hint`, `.mode-hint`, `.staged-full`, `.save-inline` classes to replace remaining inline styles
+* Remove `<br>` from running-mode controls; use a wrapping `<div>` instead
+* Add `font-family: inherit` to global button rule so all buttons use the page monospace font
+* Fix Monitor tab alignment: `margin: 0 0 -2px` on `.tab-btn` overrides the global `button` margin so the Monitor `<button>` tab sits flush with the `<a>` tabs
+* Set `background: transparent` on `.tab-btn` to suppress the browser UA button background

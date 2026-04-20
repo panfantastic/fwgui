@@ -335,7 +335,7 @@ fn page(body: &str) -> String {
   h3 {{ margin-top: 1em; color: #444; }}
   pre {{ background: #f0f0f0; padding: 1em; overflow-x: auto; white-space: pre-wrap; border: 1px solid #ddd; margin: 0; }}
   select {{ margin-bottom: .5em; padding: .25em; }}
-  button {{ padding: .4em .9em; margin: .2em; cursor: pointer; font-size: 1em; }}
+  button {{ padding: .4em .9em; margin: .2em; cursor: pointer; font-size: 1em; font-family: inherit; }}
   .btn-danger  {{ background: #b00; color: #fff; border: 1px solid #800; }}
   .btn-safe    {{ background: #060; color: #fff; border: 1px solid #030; }}
   .btn-neutral {{ background: #e0e0e0; border: 1px solid #aaa; }}
@@ -360,17 +360,30 @@ fn page(body: &str) -> String {
   .d-fold[open] summary {{ border-bottom: 1px solid #eee; margin-bottom: 0; }}
   #countdown {{ font-size: 1.6em; font-weight: bold; color: #b00; }}
   #validate-result {{ margin-top: .5em; min-height: 1.5em; }}
-  .actions {{ margin-top: .75em; }}
+  .actions {{ margin-top: .75em; display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }}
+  .btn-sm {{ font-size: .8em; padding: .2em .4em; }}
+  .log-controls {{ margin: .25em 0; display: flex; gap: .25em; flex-wrap: wrap; align-items: center; }}
+  .log-controls label {{ font-size: .8em; color: #555; }}
+  .log-controls input[type="number"] {{ width: 3.5em; font-size: 1em; padding: .1em .2em; }}
+  .form-btns {{ margin: .5em 0; display: flex; gap: .25em; align-items: center; flex-wrap: wrap; }}
+  #monitor-view {{ padding: .5em 1em; }}
+  #monitor-view h2 {{ margin-top: .25em; }}
+  .sb-help {{ list-style: none; padding: 0; margin: .25em 0; }}
+  .sb-help li + li {{ margin-top: .4em; }}
+  .hint {{ font-size: .8em; color: #888; margin: .3em 0; }}
+  .mode-hint {{ margin: .2em 0 .4em; font-size: .85em; color: #555; }}
+  .staged-full {{ margin-top: .75em; }}
+  .save-inline {{ display: inline; margin-left: .25em; }}
   .mode-tabs {{ display: flex; margin-bottom: 1em; border-bottom: 2px solid #ccc; }}
   .tab-btn {{ padding: .4em 1.2em; text-decoration: none; color: #555; border: 1px solid transparent;
-              border-bottom: none; margin-bottom: -2px; border-radius: 3px 3px 0 0; }}
+              border-bottom: none; margin: 0 0 -2px; border-radius: 3px 3px 0 0; background: transparent; }}
   .tab-btn.active {{ color: #000; background: #fff; border-color: #ccc; border-bottom-color: #fff; font-weight: bold; }}
   .tab-btn:hover:not(.active) {{ background: #f0f0f0; color: #333; }}
   .editor-layout {{ display: grid; grid-template-columns: 1fr 220px; gap: 1em; align-items: start; }}
   .editor-layout-bp {{ grid-template-columns: 200px 1fr 220px; }}
   .log-panel {{ border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
                 font-size: .85em; position: sticky; top: 1em; }}
-  .log-panel h4 {{ margin: .2em 0 .4em; color: #333; border-bottom: 1px solid #eee; padding-bottom: .1em; font-size: .95em; }}
+  .log-panel h4 {{ margin: 0 0 .4em; color: #333; border-bottom: 1px solid #eee; padding-bottom: .1em; font-size: .95em; }}
   #log-output {{ height: 340px; overflow-y: auto; background: #111; color: #9f9; border-radius: 2px;
                  padding: .4em; margin-top: .4em; font-size: .8em;
                  resize: vertical; min-height: 80px; }}
@@ -505,19 +518,16 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
     };
 
     let mode_controls = match mode {
-        EditMode::Running => r#"<label for="mode-sel">Stage mode:</label>
-  <select id="mode-sel" name="mode">
+        EditMode::Running => r#"<div><label for="mode-sel">Stage mode: <select id="mode-sel" name="mode">
     <option value="full">Full replacement</option>
     <option value="patch">Patch (incremental)</option>
-  </select><br>"#,
+  </select></label></div>"#,
         EditMode::Saved => r#"<input type="hidden" name="mode" value="saved_incremental">
-  <p style="margin:.2em 0 .4em;font-size:.85em;color:#555">
-    Staging applies only the tables in this file incrementally — other tables are left untouched.
-  </p>"#,
+  <p class="mode-hint">Staging applies only the tables in this file incrementally — other tables are left untouched.</p>"#,
     };
 
     let save_form = if mode == EditMode::Saved {
-        r#"<form id="save-form" method="post" action="/save-config" style="display:inline;margin-left:.25em">
+        r#"<form id="save-form" method="post" action="/save-config" class="save-inline">
   <input type="hidden" id="save-content" name="content">
   <button type="submit" class="btn-neutral">Save to disk</button>
 </form>"#
@@ -531,14 +541,14 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
         (
             "editor-layout editor-layout-bp",
             r#"<div class="log-panel" id="log-panel-slot">
-<h4 style="margin-top:0">Log Output</h4>
-<button type="button" class="btn-neutral" id="go-monitor-btn"
-  style="font-size:.75em;padding:.15em .35em;margin-bottom:.4em" title="Full view">⛶ Full view</button>
+<h4>Log Output</h4>
+<button type="button" class="btn-neutral btn-sm" id="go-monitor-btn"
+  style="margin-bottom:.4em" title="Full view">⛶ Full view</button>
 <div id="log-container">
-<div style="margin:.25em 0;display:flex;gap:.25em;flex-wrap:wrap;align-items:center">
-  <button id="log-toggle" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Monitor: off</button>
-  <button id="log-clear" type="button" class="btn-neutral" style="font-size:.8em;padding:.2em .4em">Clear</button>
-  <label style="font-size:.8em;color:#555">Lines: <input id="log-max-input" type="number" value="50" min="10" max="9999" style="width:3.5em;font-size:1em;padding:.1em .2em"></label>
+<div class="log-controls">
+  <button id="log-toggle" type="button" class="btn-neutral btn-sm">Monitor: off</button>
+  <button id="log-clear" type="button" class="btn-neutral btn-sm">Clear</button>
+  <label>Lines: <input id="log-max-input" type="number" value="50" min="10" max="9999"></label>
 </div>
 <div id="log-output"></div>
 </div>
@@ -556,8 +566,8 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
   <a href="/?mode=saved" class="{sav_cls}">Saved config</a>
   <button id="monitor-tab-btn" class="{mon_cls}" type="button">Monitor</button>
 </div>
-<div id="monitor-view" style="display:none;padding:.5em 1em">
-<h2 style="margin-top:.25em">Monitor</h2>
+<div id="monitor-view" style="display:none">
+<h2>Monitor</h2>
 </div>
 <div id="editor-view" class="{layout_cls}">
 {log_panel}
@@ -567,7 +577,7 @@ fn render_editing(live_text: &str, fetch_error: Option<&str>, sidebar: &SidebarD
   {mode_controls}
   <input type="hidden" id="content-hidden" name="content">
   <div id="editor"></div>
-  <div style="margin:.5em 0">
+  <div class="form-btns">
     <button type="button" class="btn-neutral" id="validate-btn">Validate syntax</button>
     <button type="submit">Stage change</button>
   </div>
@@ -628,15 +638,15 @@ fn render_sidebar(sidebar: &SidebarData, with_log_groups: bool) -> String {
     }
     h.push_str("</ul>\n");
 
-    h.push_str("<h4>Help</h4>\n<ul style=\"list-style:none;padding:0;margin:.25em 0\">\n");
+    h.push_str("<h4>Help</h4>\n<ul class=\"sb-help\">\n");
     h.push_str("  <li><a href=\"https://wiki.nftables.org/\" target=\"_blank\" rel=\"noopener noreferrer\">nftables wiki \u{2197}</a></li>\n");
-    h.push_str("  <li style=\"margin-top:.4em\"><button type=\"button\" class=\"btn-neutral\" id=\"help-toggle\" style=\"font-size:.85em;padding:.2em .5em\">Keyword help: off</button></li>\n");
+    h.push_str("  <li><button type=\"button\" class=\"btn-neutral btn-sm\" id=\"help-toggle\">Keyword help: off</button></li>\n");
     h.push_str("</ul>\n");
 
     if with_log_groups {
         h.push_str("<h4>Log Groups</h4>\n");
         h.push_str("<div id=\"bp-list\"><span class=\"sb-empty\">No breakpoints</span></div>\n");
-        h.push_str("<p style=\"font-size:.8em;color:#888;margin:.3em 0\">Click gutter to toggle</p>\n");
+        h.push_str("<p class=\"hint\">Click gutter to toggle</p>\n");
     }
 
     h.push_str("</aside>\n");
@@ -661,15 +671,15 @@ fn render_staged(change: &StagedChange, live_text: &str) -> String {
 <div class="msg warn">Review the diff carefully before promoting.</div>
 <h3>Diff (live → staged)</h3>
 <div class="diff-view" id="diff-view"></div>
-<details style="margin-top:.75em">
+<details class="staged-full">
   <summary>Full staged content</summary>
   <pre>{content_esc}</pre>
 </details>
 <div class="actions">
-  <form method="post" action="/promote" style="display:inline">
+  <form method="post" action="/promote">
     <button type="submit" class="btn-danger">Promote to live</button>
   </form>
-  <form method="post" action="/clear" style="display:inline">
+  <form method="post" action="/clear">
     <button type="submit">Clear</button>
   </form>
 </div>
