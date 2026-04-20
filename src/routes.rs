@@ -1450,22 +1450,26 @@ async function loadGraph(fitView) {
     return;
   }
 
-  const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
-  natW = vb[2] || svg.width.baseVal.value || 800;
-  natH = vb[3] || svg.height.baseVal.value || 600;
-  svg.setAttribute('width', natW);
-  svg.setAttribute('height', natH);
-
   if (pz) { pz.destroy(); pz = null; }
   if (wheelHandler) { container.removeEventListener('wheel', wheelHandler); wheelHandler = null; }
   container.innerHTML = '';
   container.appendChild(svg);
 
+  // Read actual rendered pixel size BEFORE overriding attributes.
+  // Graphviz outputs dimensions in points (pt); getBoundingClientRect gives true CSS pixels,
+  // so the scale calculation is accurate regardless of the pt→px conversion (~1.333).
+  const rect = svg.getBoundingClientRect();
+  natW = rect.width  || 800;
+  natH = rect.height || 600;
+  // Lock the SVG to exact pixel values so panzoom's coordinate space is 1:1 with screen pixels.
+  svg.setAttribute('width',  natW);
+  svg.setAttribute('height', natH);
+
   const cw = container.clientWidth  || 800;
   const ch = container.clientHeight || 600;
   const initScale = fitView ? Math.min(cw / natW, ch / natH) * 0.92 : 1;
-  const initX     = fitView ? (cw - natW * initScale) / 2 : 0;
-  const initY     = fitView ? (ch - natH * initScale) / 2 : 0;
+  const initX     = fitView ? (cw - natW * initScale) / (2 * initScale) : 0;
+  const initY     = fitView ? (ch - natH * initScale) / (2 * initScale) : 0;
   pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: initScale, startX: initX, startY: initY });
   wheelHandler = pz.zoomWithWheel;
   container.addEventListener('wheel', wheelHandler);
@@ -1476,7 +1480,7 @@ function doFit(animate) {
   if (!pz) return;
   const scale = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
   pz.zoom(scale, { animate });
-  pz.pan((container.clientWidth - natW * scale) / 2, (container.clientHeight - natH * scale) / 2, { animate });
+  pz.pan((container.clientWidth - natW * scale) / (2 * scale), (container.clientHeight - natH * scale) / (2 * scale), { animate });
 }
 
 function buildPills(families) {
