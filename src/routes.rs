@@ -719,7 +719,7 @@ fn render_promoting(change: &StagedChange, previous_text: &str, remaining: Durat
 fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> String {
     // type="module" so imports work; modules are deferred — DIFF_JS (in <head>) runs first.
     let mut s = String::from("<script type=\"module\">\n");
-    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, RangeSet, foldService, vim, gutter, GutterMarker } from '/static/cm-bundle.js';\n");
+    s.push_str("import { basicSetup, EditorView, Decoration, WidgetType, hoverTooltip, keymap, indentWithTab, EditorState, StateEffect, StateField, Compartment, RangeSet, foldService, vim, gutter, GutterMarker, nftLanguage } from '/static/cm-bundle.js';\n");
     s.push_str("(function() {\n");
     s.push_str("  var original = "); s.push_str(live_js); s.push_str(";\n");
     s.push_str("  var valBtn = document.getElementById('validate-btn');\n");
@@ -933,6 +933,7 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
     s.push_str("        vim(),\n");
     s.push_str(&format!("        {bp_gutter_ext}\n"));
     s.push_str("        basicSetup,\n");
+    s.push_str("        nftLanguage.extension,\n");
     s.push_str("        nftFold,\n");
     s.push_str("        helpComp.of([]),\n");
     s.push_str("        keymap.of([indentWithTab]),\n");
