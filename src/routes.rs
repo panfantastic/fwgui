@@ -1461,15 +1461,19 @@ async function loadGraph(fitView) {
   container.innerHTML = '';
   container.appendChild(svg);
 
-  const cw = container.clientWidth  || 800;
-  const ch = container.clientHeight || 600;
-  const scale = fitView ? Math.min(cw / natW, ch / natH) * 0.92 : 1;
-  pz = Panzoom(svg, { startScale: scale, minScale: 0.01, maxScale: 20 });
-  if (fitView) pz.pan((cw - natW * scale) / 2, (ch - natH * scale) / 2, { animate: false });
-
+  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20 });
   wheelHandler = pz.zoomWithWheel;
   container.addEventListener('wheel', wheelHandler);
+
+  if (fitView) doFit(false);
   status.textContent = '';
+}
+
+function doFit(animate) {
+  if (!pz) return;
+  const scale = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
+  pz.zoom(scale, { animate });
+  pz.pan((container.clientWidth - natW * scale) / 2, (container.clientHeight - natH * scale) / 2, { animate });
 }
 
 function buildPills(families) {
@@ -1489,14 +1493,7 @@ function buildPills(families) {
   }
 }
 
-function doFit() {
-  if (!pz) return;
-  const scale = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
-  pz.zoom(scale, { animate: true });
-  pz.pan((container.clientWidth - natW * scale) / 2, (container.clientHeight - natH * scale) / 2, { animate: true });
-}
-
-document.getElementById('btn-fit').onclick    = doFit;
+document.getElementById('btn-fit').onclick    = function() { doFit(true); };
 document.getElementById('btn-reload').onclick = function() { loadGraph(true); };
 
 loadGraph(true);
