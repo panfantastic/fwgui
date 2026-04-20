@@ -104,11 +104,24 @@ pub async fn validate(Form(form): Form<ValidateForm>) -> Json<ValidateResponse> 
     }
 }
 
-pub async fn graph_dot() -> axum::response::Response {
+#[derive(Deserialize)]
+pub struct GraphDotQuery {
+    hide: Option<String>,
+}
+
+pub async fn graph_dot(Query(q): Query<GraphDotQuery>) -> axum::response::Response {
     use axum::http::StatusCode;
-    match crate::graph::build_dot() {
-        Ok(dot) => axum::response::Response::builder()
+    let hidden: std::collections::HashSet<String> = q.hide.as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    match crate::graph::build_dot(&hidden) {
+        Ok((dot, families)) => axum::response::Response::builder()
             .header(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header("X-Graph-Families", families.join(","))
+            .header("Access-Control-Expose-Headers", "X-Graph-Families")
             .body(axum::body::Body::from(dot))
             .unwrap(),
         Err(e) => axum::response::Response::builder()
@@ -1397,23 +1410,36 @@ pub async fn log_stream() -> Sse<impl Stream<Item = Result<Event, Infallible>>> 
 }
 
 fn render_graph_page() -> String {
+    // Unicode escapes used inside r#""# raw strings to avoid encoding issues.
     let script = r#"<script type="module">
 import { vizInstance, Panzoom } from '/static/graph-bundle.js';
 
 const container = document.getElementById('graph-container');
 const status    = document.getElementById('graph-status');
+const pillBar   = document.getElementById('pill-bar');
 
-async function loadGraph() {
-  status.textContent = 'Loading…';
-  let dot;
+let pz = null;
+let wheelHandler = null;
+let natW = 800, natH = 600;
+const hidden = new Set();
+
+async function loadGraph(fitView) {
+  status.textContent = 'Loading\u2026';
+  const hideParam = [...hidden].join(',');
+  const url = hideParam ? '/api/graph/dot?hide=' + encodeURIComponent(hideParam) : '/api/graph/dot';
+
+  let dot, families;
   try {
-    const resp = await fetch('/api/graph/dot');
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error(await resp.text());
     dot = await resp.text();
+    families = (resp.headers.get('X-Graph-Families') || '').split(',').filter(Boolean);
   } catch (e) {
-    status.textContent = 'Error fetching graph: ' + e.message;
+    status.textContent = 'Error: ' + e.message;
     return;
   }
+
+  buildPills(families);
 
   let svg;
   try {
@@ -1424,61 +1450,87 @@ async function loadGraph() {
     return;
   }
 
-  // Size the SVG to its natural Graphviz dimensions so panzoom works correctly.
   const vb = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
-  const natW = vb[2] || svg.width.baseVal.value || 800;
-  const natH = vb[3] || svg.height.baseVal.value || 600;
+  natW = vb[2] || svg.width.baseVal.value || 800;
+  natH = vb[3] || svg.height.baseVal.value || 600;
   svg.setAttribute('width', natW);
   svg.setAttribute('height', natH);
 
+  if (pz) { pz.destroy(); pz = null; }
+  if (wheelHandler) { container.removeEventListener('wheel', wheelHandler); wheelHandler = null; }
   container.innerHTML = '';
   container.appendChild(svg);
 
-  // Fit to viewport on first render.
   const cw = container.clientWidth  || 800;
   const ch = container.clientHeight || 600;
-  const scale = Math.min(cw / natW, ch / natH) * 0.92;
-  const pz = Panzoom(svg, {
-    startScale: scale,
-    minScale:   0.01,
-    maxScale:   20,
-  });
-  pz.pan((cw - natW * scale) / 2, (ch - natH * scale) / 2, { animate: false });
-  container.addEventListener('wheel', pz.zoomWithWheel);
+  const scale = fitView ? Math.min(cw / natW, ch / natH) * 0.92 : 1;
+  pz = Panzoom(svg, { startScale: scale, minScale: 0.01, maxScale: 20 });
+  if (fitView) pz.pan((cw - natW * scale) / 2, (ch - natH * scale) / 2, { animate: false });
 
-  document.getElementById('btn-fit').onclick = function() {
-    const scale2 = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
-    pz.zoom(scale2, { animate: true });
-    pz.pan((container.clientWidth - natW * scale2) / 2, (container.clientHeight - natH * scale2) / 2, { animate: true });
-  };
-
+  wheelHandler = pz.zoomWithWheel;
+  container.addEventListener('wheel', wheelHandler);
   status.textContent = '';
 }
 
-loadGraph();
+function buildPills(families) {
+  const existing = new Set([...pillBar.querySelectorAll('.pill')].map(b => b.dataset.family));
+  for (const fam of families) {
+    if (existing.has(fam)) continue;
+    const btn = document.createElement('button');
+    btn.className = 'pill active';
+    btn.dataset.family = fam;
+    btn.textContent = fam;
+    btn.onclick = function() {
+      if (hidden.has(fam)) { hidden.delete(fam); btn.classList.add('active'); }
+      else                  { hidden.add(fam);    btn.classList.remove('active'); }
+      loadGraph(true);
+    };
+    pillBar.appendChild(btn);
+  }
+}
+
+function doFit() {
+  if (!pz) return;
+  const scale = Math.min(container.clientWidth / natW, container.clientHeight / natH) * 0.92;
+  pz.zoom(scale, { animate: true });
+  pz.pan((container.clientWidth - natW * scale) / 2, (container.clientHeight - natH * scale) / 2, { animate: true });
+}
+
+document.getElementById('btn-fit').onclick    = doFit;
+document.getElementById('btn-reload').onclick = function() { loadGraph(true); };
+
+loadGraph(true);
 </script>"#;
 
-    format!(
-        r#"<!DOCTYPE html>
+    format!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>fwgui — Graph</title>
+<title>fwgui &#8212; Graph</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: monospace; background: #12121e; color: #ccd; display: flex; flex-direction: column; height: 100vh; }}
-  .mode-tabs {{ display: flex; padding: .4em .75em 0; border-bottom: 2px solid #334; background: #1a1a2e; flex-shrink: 0; }}
+  body {{ font-family: monospace; background: #12121e; color: #ccd;
+          display: flex; flex-direction: column; height: 100vh; }}
+  .mode-tabs {{ display: flex; padding: .4em .75em 0; border-bottom: 2px solid #334;
+               background: #1a1a2e; flex-shrink: 0; }}
   .tab-btn {{ padding: .4em 1.2em; text-decoration: none; color: #778; border: 1px solid transparent;
               border-bottom: none; margin: 0 0 -2px; border-radius: 3px 3px 0 0; background: transparent;
               font-family: inherit; font-size: 1em; cursor: pointer; }}
-  .tab-btn.active {{ color: #ccd; background: #12121e; border-color: #334; border-bottom-color: #12121e; font-weight: bold; }}
+  .tab-btn.active {{ color: #ccd; background: #12121e; border-color: #334;
+                     border-bottom-color: #12121e; font-weight: bold; }}
   .tab-btn:hover:not(.active) {{ background: #222233; color: #aab; }}
-  .toolbar {{ padding: .4em .75em; background: #1a1a2e; border-bottom: 1px solid #334; flex-shrink: 0;
-              display: flex; align-items: center; gap: .75em; }}
-  .toolbar button {{ font-family: inherit; font-size: .9em; padding: .25em .8em; cursor: pointer;
-                     background: #2a2a44; color: #aab; border: 1px solid #445; border-radius: 3px; }}
-  .toolbar button:hover {{ background: #333355; }}
-  #graph-status {{ color: #778; font-size: .9em; }}
+  .toolbar {{ padding: .4em .75em; background: #1a1a2e; border-bottom: 1px solid #334;
+              flex-shrink: 0; display: flex; align-items: center; gap: .6em; flex-wrap: wrap; }}
+  .toolbar > button {{ font-family: inherit; font-size: .9em; padding: .25em .8em; cursor: pointer;
+                        background: #2a2a44; color: #aab; border: 1px solid #445; border-radius: 3px; }}
+  .toolbar > button:hover {{ background: #333355; }}
+  .pill-sep {{ width: 1px; height: 1.2em; background: #334; flex-shrink: 0; }}
+  #pill-bar {{ display: flex; gap: .4em; flex-wrap: wrap; }}
+  .pill {{ font-family: inherit; font-size: .85em; padding: .2em .75em; cursor: pointer;
+           background: #252530; color: #556; border: 1px solid #334; border-radius: 99px; }}
+  .pill.active {{ background: #2a3a55; color: #88bbee; border-color: #446688; }}
+  .pill:hover {{ background: #303050; }}
+  #graph-status {{ color: #667; font-size: .85em; margin-left: auto; }}
   #graph-container {{ flex: 1; overflow: hidden; position: relative; cursor: grab; }}
   #graph-container:active {{ cursor: grabbing; }}
   #graph-container svg {{ display: block; }}
@@ -1492,14 +1544,15 @@ loadGraph();
 </div>
 <div class="toolbar">
   <button id="btn-fit">Fit</button>
-  <button onclick="location.reload()">Reload</button>
-  <span id="graph-status">Loading…</span>
+  <button id="btn-reload">Reload</button>
+  <div class="pill-sep"></div>
+  <div id="pill-bar"></div>
+  <span id="graph-status">Loading&#8230;</span>
 </div>
 <div id="graph-container"></div>
 {script}
 </body>
-</html>"#
-    )
+</html>"#)
 }
 
 fn url_encode(s: &str) -> String {

@@ -200,3 +200,52 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
 * Zoom-out must allow the graph to shrink well below the viewport size (minScale 0.01, no contain constraint)
 * Chains at non-standard priorities visually stand out relative to ghost markers
 
+## v0.10.1 — Multi-layer graph, collapse/expand, clickable chains
+
+### Protocol layers
+
+* Extend the graph to show all nftables address families, each as a horizontal row:
+  - `ip / ip6 / inet` — prerouting → input/forward → output → postrouting (same as v0.10)
+  - `bridge` — same 5-hook structure; distinct cluster colour
+  - `arp` — input → output only
+  - `netdev` — ingress (far left) and egress (far right) only
+* Only families with at least one base chain are rendered — empty families produce no row
+* Hook columns are aligned across rows using `rank=same` with `newrank=true` so the grid
+  matches the Engelhardt layered diagram
+* Each family is a `subgraph cluster_*` with its own background colour and border
+
+### Collapse / expand
+
+* Populated families appear as toggle pills in the graph toolbar (e.g. `ip/ip6/inet`, `bridge`)
+* Each pill is active (visible) by default; clicking hides that family row
+* Hiding re-fetches `GET /api/graph/dot?hide=bridge,arp` and re-renders — full re-layout,
+  no visual gaps
+* The endpoint returns all populated family IDs in an `X-Graph-Families` response header
+  so the JS can build the pill bar without a separate API call
+* Panzoom fits to view after each re-render
+
+### Clickable chains
+
+* Each chain row `<TD>` in the DOT HTML label carries:
+  - `HREF="/?mode=running"` — clicking navigates to the running-config editor (same tab)
+  - `ID="chain-{family}-{table}-{name}"` — stable DOM ID for future packet-path highlighting
+* Hook nodes carry `id="hook-{family_group}-{hook}"` for future traversal-edge highlighting
+* These IDs are the packet-path API surface: a future `/api/graph/dot?path=inet/main/input,...`
+  query param can add CSS classes to those elements without re-architecting the pipeline
+
+### Implementation notes
+
+* `GET /api/graph/dot` accepts optional `hide` query param (comma-separated family IDs)
+* `build_dot(hidden)` returns `(dot_string, all_populated_family_ids)` — hidden families are
+  excluded from the DOT but still reported so the pill bar shows all toggles
+* Panzoom instance is destroyed and re-created on each re-render; wheel listener is tracked
+  and removed to avoid stacking duplicates
+
+### Validation
+
+* A ruleset with only inet chains: single row, no pills for bridge/arp/netdev
+* A ruleset with inet + bridge chains: two rows aligned at hook columns, two pills
+* Hiding a family row removes it cleanly; showing it restores it
+* Clicking a chain row navigates to `/?mode=running`
+* Chain TD IDs are present in the rendered SVG DOM
+
