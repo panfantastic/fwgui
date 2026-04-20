@@ -254,7 +254,45 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
 * A ruleset with only inet chains: single row, no pills for bridge/arp/netdev
 * A ruleset with inet + bridge chains: two rows aligned at hook columns, two pills
 * Hiding a family row removes it cleanly; showing it restores it
-* Clicking a chain row navigates to `/?mode=running`
+* Clicking a chain row navigates to the editor with the chain definition scrolled into view
 * Chain TD IDs are present in the rendered SVG DOM
 * On load and after reload/pill toggle, the full graph is centred and fully visible — no content clipped by the left or right edge
+
+## v0.10.2 — Chain deep-link and config-mode toggle
+
+### Chain deep-link
+
+* Clicking a chain node in the graph navigates to the config editor and scrolls the
+  editor to the chain's definition line, placing the cursor there
+* The URL carries the chain identity as `/?mode=<mode>&chain=<family>/<table>/<name>`,
+  e.g. `/?mode=running&chain=inet/filter/input`
+* On editor load, the `chain` URL param is read; the editor searches for `table <family> <table>`
+  first to resolve the correct block, then `chain <name> {` within it, and scrolls that line
+  to the centre of the viewport with the cursor placed at the chain keyword
+* If the chain is not found in the current editor content (e.g. the config has changed since
+  the graph was rendered), navigation still succeeds but no scroll occurs — no error is shown
+
+### Config-mode toggle
+
+* The graph toolbar carries a toggle button (default: **Running**) controlling which config
+  mode chain links open: Running config (`/?mode=running`) or Saved config (`/?mode=saved`)
+* The selected mode persists in `localStorage` across page reloads
+* Toggling the button does not re-render the graph — it only affects subsequent link clicks
+
+### Implementation notes
+
+* Chain HREF in DOT is `/?chain=family/table/name` (no `mode`) — the graph page JS
+  intercepts all SVG `<a>` clicks, injects `?mode=<linkMode>`, and navigates
+* Graphviz SVG `<a>` elements may use `xlink:href` (older Graphviz) or `href` (newer);
+  the interceptor checks both attributes
+* Table–chain disambiguation: the editor search anchors to `table <family> <table>` before
+  searching for `chain <name> {`, so chains with the same name in different tables resolve
+  correctly
+
+### Validation
+
+* Clicking a chain in the graph opens the editor with that chain definition centred and the cursor on it
+* Toggle button cycles Running ↔ Saved; clicking a chain after toggling opens the correct mode
+* Toggle state survives a page reload
+* Navigating to a chain that no longer exists in the config does not produce an error
 

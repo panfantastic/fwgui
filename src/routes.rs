@@ -1219,6 +1219,28 @@ fn editing_script(live_js: &str, has_save_form: bool, is_running: bool) -> Strin
     s.push_str("      valBtn.textContent = 'Validate syntax';\n");
     s.push_str("    });\n");
     s.push_str("  });\n");
+    // Scroll to chain if ?chain=family/table/name URL param is present.
+    // Used when navigating from the graph view by clicking a chain node.
+    s.push_str("  (function() {\n");
+    s.push_str("    var cp = new URLSearchParams(window.location.search).get('chain');\n");
+    s.push_str("    if (!cp) return;\n");
+    s.push_str("    var parts = cp.split('/');\n");
+    s.push_str("    if (parts.length < 3) return;\n");
+    s.push_str("    var fam = parts[0], tbl = parts[1], chn = parts[2];\n");
+    s.push_str("    function reEsc(s) { return s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); }\n");
+    s.push_str("    var text = view.state.doc.toString();\n");
+    // Find the enclosing table block first so chains with the same name in different tables resolve correctly.
+    s.push_str("    var tRe = new RegExp('\\\\btable\\\\s+' + reEsc(fam) + '\\\\s+' + reEsc(tbl) + '\\\\b');\n");
+    s.push_str("    var tMatch = tRe.exec(text);\n");
+    s.push_str("    var fromIdx = tMatch ? tMatch.index : 0;\n");
+    s.push_str("    var cRe = new RegExp('\\\\bchain\\\\s+' + reEsc(chn) + '\\\\s*\\\\{');\n");
+    s.push_str("    var cMatch = cRe.exec(text.slice(fromIdx));\n");
+    s.push_str("    if (!cMatch) return;\n");
+    s.push_str("    var pos = fromIdx + cMatch.index;\n");
+    // Place the cursor at the chain keyword and centre the line in the viewport.
+    s.push_str("    view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) });\n");
+    s.push_str("  })();\n");
+
     s.push_str("})();\n</script>");
     s
 }
@@ -1422,6 +1444,31 @@ let pz = null;
 let wheelHandler = null;
 const hidden = new Set();
 
+// Persist the link-mode (running/saved) across page reloads.
+const modeBtn = document.getElementById('btn-mode');
+let linkMode = localStorage.getItem('fwgui_graph_link_mode') || 'running';
+function setLinkMode(m) {
+  linkMode = m;
+  localStorage.setItem('fwgui_graph_link_mode', m);
+  modeBtn.textContent = '\u2192 ' + (m === 'running' ? 'Running' : 'Saved');
+}
+setLinkMode(linkMode);
+modeBtn.onclick = function() { setLinkMode(linkMode === 'running' ? 'saved' : 'running'); };
+
+function patchLinks(svg) {
+  // Graphviz SVG <a> elements may use xlink:href (older) or href (newer).
+  svg.querySelectorAll('a').forEach(function(a) {
+    var href = a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+    if (!href) return;
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      var url = new URL(href, location.origin);
+      url.searchParams.set('mode', linkMode);
+      location.href = url.toString();
+    });
+  });
+}
+
 async function loadGraph() {
   status.textContent = 'Loading\u2026';
   const hideParam = [...hidden].join(',');
@@ -1461,6 +1508,7 @@ async function loadGraph() {
 
   container.innerHTML = '';
   container.appendChild(svg);
+  patchLinks(svg);
 
   pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: 1, startX: 0, startY: 0 });
   wheelHandler = pz.zoomWithWheel;
@@ -1540,6 +1588,8 @@ loadGraph();
 <div class="toolbar">
   <button id="btn-fit">Fit</button>
   <button id="btn-reload">Reload</button>
+  <div class="pill-sep"></div>
+  <button id="btn-mode" title="Toggle whether chain links open the Running or Saved config">&#x2192; Running</button>
   <div class="pill-sep"></div>
   <div id="pill-bar"></div>
   <span id="graph-status">Loading&#8230;</span>

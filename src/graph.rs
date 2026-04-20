@@ -168,8 +168,9 @@ fn hook_label(hook: &str, group: &FamilyGroup, chains: &[&ChainInfo]) -> String 
             let plabel = dot_html_escape(&priority_label(c.priority, hook, group));
             let cname  = dot_html_escape(&c.name);
             let chain_id = format!("chain-{}-{}-{}", c.family, c.table, c.name);
+            let href = format!("/?chain={}/{}/{}", c.family, c.table, c.name);
             rows.push_str(&format!(
-                "<TR><TD ID=\"{chain_id}\" HREF=\"/?mode=running\" ALIGN=\"LEFT\"><FONT COLOR=\"#ccddee\">{cname}  [{plabel}]</FONT></TD></TR>\n"
+                "<TR><TD ID=\"{chain_id}\" HREF=\"{href}\" ALIGN=\"LEFT\"><FONT COLOR=\"#ccddee\">{cname}  [{plabel}]</FONT></TD></TR>\n"
             ));
             ci += 1;
         }
