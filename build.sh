@@ -6,5 +6,5 @@ cd "$(dirname "$0")/ui"
 npm install --user-agent "fwgui-build"
 mkdir -p ../static
 npm run build
-echo "static/cm-bundle.js    $(wc -c < ../static/cm-bundle.js) bytes"
-echo "static/graph-bundle.js $(wc -c < ../static/graph-bundle.js) bytes"
+echo "static/editor-bundle.js $(wc -c < ../static/editor-bundle.js) bytes"
+echo "static/graph-bundle.js  $(wc -c < ../static/graph-bundle.js) bytes"

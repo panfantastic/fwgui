@@ -8,7 +8,7 @@ export default defineConfig({
     rollupOptions: {
       preserveEntrySignatures: 'exports-only',
       input: {
-        cm: resolve(__dirname, 'src/cm.js'),
+        editor: resolve(__dirname, 'src/editor.js'),
         graph: resolve(__dirname, 'src/graph.js'),
       },
       output: {

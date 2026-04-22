@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fwgui &#8212; Graph</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; background: #12121e; color: #ccd;
+          display: flex; flex-direction: column; height: 100vh; }
+  .mode-tabs { display: flex; padding: .4em .75em 0; border-bottom: 2px solid #334;
+               background: #1a1a2e; flex-shrink: 0; }
+  .tab-btn { padding: .4em 1.2em; text-decoration: none; color: #778; border: 1px solid transparent;
+              border-bottom: none; margin: 0 0 -2px; border-radius: 3px 3px 0 0; background: transparent;
+              font-family: inherit; font-size: 1em; cursor: pointer; }
+  .tab-btn.active { color: #ccd; background: #12121e; border-color: #334;
+                     border-bottom-color: #12121e; font-weight: bold; }
+  .tab-btn:hover:not(.active) { background: #222233; color: #aab; }
+  .toolbar { padding: .4em .75em; background: #1a1a2e; border-bottom: 1px solid #334;
+              flex-shrink: 0; display: flex; align-items: center; gap: .6em; flex-wrap: wrap; }
+  .toolbar > button { font-family: inherit; font-size: .9em; padding: .25em .8em; cursor: pointer;
+                        background: #2a2a44; color: #aab; border: 1px solid #445; border-radius: 3px; }
+  .toolbar > button:hover { background: #333355; }
+  .pill-sep { width: 1px; height: 1.2em; background: #334; flex-shrink: 0; }
+  #pill-bar { display: flex; gap: .4em; flex-wrap: wrap; }
+  .pill { font-family: inherit; font-size: .85em; padding: .2em .75em; cursor: pointer;
+           background: #252530; color: #556; border: 1px solid #334; border-radius: 99px; }
+  .pill.active { background: #2a3a55; color: #88bbee; border-color: #446688; }
+  .pill:hover { background: #303050; }
+  #graph-status { color: #667; font-size: .85em; margin-left: auto; }
+  #graph-container { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+  #graph-container:active { cursor: grabbing; }
+  #graph-container svg { display: block; }
+</style>
+</head>
+<body>
+<div class="mode-tabs">
+  <a href="/" class="tab-btn">Running config</a>
+  <a href="/?mode=saved" class="tab-btn">Saved config</a>
+  <a href="/graph" class="tab-btn active">Graph</a>
+</div>
+<div class="toolbar">
+  <button id="btn-fit">Fit</button>
+  <button id="btn-reload">Reload</button>
+  <div class="pill-sep"></div>
+  <button id="btn-mode" title="Toggle whether chain links open the Running or Saved config">&#x2192; Running</button>
+  <div class="pill-sep"></div>
+  <div id="pill-bar"></div>
+  <span id="graph-status">Loading&#8230;</span>
+</div>
+<div id="graph-container"></div>
+<script type="module">
+import { vizInstance, Panzoom } from '/static/graph-bundle.js';
+
+const container = document.getElementById('graph-container');
+const status    = document.getElementById('graph-status');
+const pillBar   = document.getElementById('pill-bar');
+
+let pz = null;
+let wheelHandler = null;
+const hidden = new Set();
+
+const modeBtn = document.getElementById('btn-mode');
+let linkMode = localStorage.getItem('fwgui_graph_link_mode') || 'running';
+function setLinkMode(m) {
+  linkMode = m;
+  localStorage.setItem('fwgui_graph_link_mode', m);
+  modeBtn.textContent = '→ ' + (m === 'running' ? 'Running' : 'Saved');
+}
+setLinkMode(linkMode);
+modeBtn.onclick = function() { setLinkMode(linkMode === 'running' ? 'saved' : 'running'); };
+
+function patchLinks(svg) {
+  svg.querySelectorAll('a').forEach(function(a) {
+    var href = a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+    if (!href) return;
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      var url = new URL(href, location.origin);
+      url.searchParams.set('mode', linkMode);
+      location.href = url.toString();
+    });
+  });
+}
+
+async function loadGraph() {
+  status.textContent = 'Loading…';
+  const hideParam = [...hidden].join(',');
+  const url = hideParam ? '/api/graph/dot?hide=' + encodeURIComponent(hideParam) : '/api/graph/dot';
+
+  let dot, families;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(await resp.text());
+    dot = await resp.text();
+    families = (resp.headers.get('X-Graph-Families') || '').split(',').filter(Boolean);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    return;
+  }
+
+  buildPills(families);
+
+  let svg;
+  try {
+    const viz = await vizInstance();
+    svg = viz.renderSVGElement(dot);
+  } catch (e) {
+    status.textContent = 'Render error: ' + e.message;
+    return;
+  }
+
+  if (pz) { pz.destroy(); pz = null; }
+  if (wheelHandler) { container.removeEventListener('wheel', wheelHandler); wheelHandler = null; }
+
+  svg.setAttribute('width',  '100%');
+  svg.setAttribute('height', '100%');
+  svg.style.display = 'block';
+
+  container.innerHTML = '';
+  container.appendChild(svg);
+  patchLinks(svg);
+
+  pz = Panzoom(svg, { minScale: 0.01, maxScale: 20, startScale: 1, startX: 0, startY: 0 });
+  wheelHandler = pz.zoomWithWheel;
+  container.addEventListener('wheel', wheelHandler);
+  status.textContent = '';
+}
+
+function doFit(animate) {
+  if (!pz) return;
+  pz.zoom(1, { animate });
+  pz.pan(0, 0, { animate });
+}
+
+function buildPills(families) {
+  const existing = new Set([...pillBar.querySelectorAll('.pill')].map(b => b.dataset.family));
+  for (const fam of families) {
+    if (existing.has(fam)) continue;
+    const btn = document.createElement('button');
+    btn.className = 'pill active';
+    btn.dataset.family = fam;
+    btn.textContent = fam;
+    btn.onclick = function() {
+      if (hidden.has(fam)) { hidden.delete(fam); btn.classList.add('active'); }
+      else                  { hidden.add(fam);    btn.classList.remove('active'); }
+      loadGraph();
+    };
+    pillBar.appendChild(btn);
+  }
+}
+
+document.getElementById('btn-fit').onclick    = function() { doFit(true); };
+document.getElementById('btn-reload').onclick = function() { loadGraph(); };
+
+loadGraph();
+</script>
+</body>
+</html>

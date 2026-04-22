@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fwgui</title>
+<style>
+  body { font-family: monospace; max-width: 1200px; margin: 2em auto; padding: 0 1em; background: #fafafa; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: .25em; }
+  h2 { border-bottom: 1px solid #aaa; padding-bottom: .15em; margin-top: 1.5em; }
+  h3 { margin-top: 1em; color: #444; }
+  pre { background: #f0f0f0; padding: 1em; overflow-x: auto; white-space: pre-wrap; border: 1px solid #ddd; margin: 0; }
+  select { margin-bottom: .5em; padding: .25em; }
+  button { padding: .4em .9em; margin: .2em; cursor: pointer; font-size: 1em; font-family: inherit; }
+  .btn-danger  { background: #b00; color: #fff; border: 1px solid #800; }
+  .btn-safe    { background: #060; color: #fff; border: 1px solid #030; }
+  .btn-neutral { background: #e0e0e0; border: 1px solid #aaa; }
+  .msg { padding: .5em .75em; margin: .75em 0; border-radius: 3px; }
+  .error  { background: #fdd; border: 1px solid #c00; }
+  .notice { background: #dfd; border: 1px solid #090; }
+  .warn   { background: #ffe; border: 1px solid #990; }
+  details { margin: .5em 0; }
+  details summary { cursor: pointer; color: #555; padding: .25em 0; }
+  details[open] summary { margin-bottom: .5em; }
+  .diff-view { background: #fff; border: 1px solid #ddd; padding: .5em 0;
+                overflow-x: auto; font-family: monospace; font-size: .9em; line-height: 1.5; }
+  .diff-view span { display: block; white-space: pre; padding: 0 1em; }
+  .d-add { background: #e6ffed; color: #22863a; }
+  .d-del { background: #ffeef0; color: #cb2431; }
+  .d-eq  { color: #999; }
+  .d-none { color: #aaa; font-style: italic; padding: .5em 1em; }
+  .d-fold { margin: 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; }
+  .d-fold summary { display: block; padding: 2px 1em; cursor: pointer; color: #0969da;
+                     background: #f6f8fa; font-size: .85em; user-select: none; list-style: none; }
+  .d-fold summary::-webkit-details-marker { display: none; }
+  .d-fold[open] summary { border-bottom: 1px solid #eee; margin-bottom: 0; }
+  #countdown { font-size: 1.6em; font-weight: bold; color: #b00; }
+  #validate-result { margin-top: .5em; min-height: 1.5em; }
+  .actions { margin-top: .75em; display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
+  .btn-sm { font-size: .8em; padding: .2em .4em; }
+  .log-controls { margin: .25em 0; display: flex; gap: .25em; flex-wrap: wrap; align-items: center; }
+  .log-controls label { font-size: .8em; color: #555; }
+  .log-controls input[type="number"] { width: 3.5em; font-size: 1em; padding: .1em .2em; }
+  .form-btns { margin: .5em 0; display: flex; gap: .25em; align-items: center; flex-wrap: wrap; }
+  #monitor-view { padding: .5em 1em; }
+  #monitor-view h2 { margin-top: .25em; }
+  .sb-help { list-style: none; padding: 0; margin: .25em 0; }
+  .sb-help li + li { margin-top: .4em; }
+  .hint { font-size: .8em; color: #888; margin: .3em 0; }
+  .mode-hint { margin: .2em 0 .4em; font-size: .85em; color: #555; }
+  .staged-full { margin-top: .75em; }
+  .save-inline { display: inline; margin-left: .25em; }
+  .mode-tabs { display: flex; margin-bottom: 1em; border-bottom: 2px solid #ccc; }
+  .tab-btn { padding: .4em 1.2em; text-decoration: none; color: #555; border: 1px solid transparent;
+              border-bottom: none; margin: 0 0 -2px; border-radius: 3px 3px 0 0; background: transparent; }
+  .tab-btn.active { color: #000; background: #fff; border-color: #ccc; border-bottom-color: #fff; font-weight: bold; }
+  .tab-btn:hover:not(.active) { background: #f0f0f0; color: #333; }
+  .editor-layout { display: grid; grid-template-columns: 1fr 220px; gap: 1em; align-items: start; }
+  .editor-layout-bp { grid-template-columns: 200px 1fr 220px; }
+  .log-panel { border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
+                font-size: .85em; position: sticky; top: 1em; }
+  .log-panel h4 { margin: 0 0 .4em; color: #333; border-bottom: 1px solid #eee; padding-bottom: .1em; font-size: .95em; }
+  #log-output { height: 340px; overflow-y: auto; background: #111; color: #9f9; border-radius: 2px;
+                 padding: .4em; margin-top: .4em; font-size: .8em;
+                 resize: vertical; min-height: 80px; }
+  .log-line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; border-bottom: 1px solid #222; }
+  .bp-marker { color: #c00; cursor: pointer; font-size: 1em; line-height: 1; padding: 0 2px; }
+  .bp-marker:hover { color: #f00; }
+  .bp-empty-marker { display: inline-block; width: .8em; cursor: pointer; padding: 0 2px; }
+  .bp-empty-marker:hover::after { content: '○'; color: #aaa; }
+  .sidebar { border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
+              font-size: .85em; position: sticky; top: 1em; }
+  .sidebar h4 { margin: .4em 0 .2em; color: #333; border-bottom: 1px solid #eee;
+                 padding-bottom: .1em; font-size: .95em; }
+  .sidebar ul { margin: .2em 0; padding: 0 0 0 .75em; }
+  .sidebar li { padding: .1em 0; }
+  .sb-item { background: none; border: none; padding: 0; cursor: pointer; color: #0969da;
+               font-family: monospace; font-size: 1em; text-align: left; }
+  .sb-item:hover { text-decoration: underline; }
+  .sb-empty { color: #aaa; font-style: italic; margin: .2em 0; }
+  .cm-tooltip { z-index: 100; }
+  .nft-tooltip { background: #1e293b; color: #f1f5f9; border-radius: 4px; padding: .4em .65em;
+                  font-size: .82em; max-width: 300px; line-height: 1.4; }
+  .nft-tooltip strong { color: #7dd3fc; }
+  #editor { height: 420px; border: 1px solid #ccc; border-radius: 2px; font-size: .9em; }
+  #editor .cm-editor { height: 100%; }
+  #editor .cm-scroller { overflow: auto; }
+  .cm-err-line { background: #fdd !important; }
+  .cm-line.cm-diff-add { background: rgba(34,134,58,.12) !important; }
+  .cm-diff-del { display: block; height: 3px; background: #cb2431; border-radius: 1px; margin: 1px 0; }
+</style>
+</head>
+<body>
+<h1>fwgui</h1>
+<div id="app">Loading…</div>
+<script type="module" src="/static/editor-bundle.js"></script>
+</body>
+</html>
