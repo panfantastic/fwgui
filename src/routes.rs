@@ -79,6 +79,53 @@ pub struct BreakpointInfo {
     log_handle: u64,
 }
 
+#[derive(Serialize)]
+struct DefineInfo {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct SidebarState {
+    interfaces: Vec<String>,
+    defines: Vec<DefineInfo>,
+    sets: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ConfigState {
+    mode: String,
+    saved_path: String,
+}
+
+#[derive(Serialize)]
+pub struct AppStateResponse {
+    phase: String,
+    live_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    staged_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    staged_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sidebar: Option<SidebarState>,
+    config: ConfigState,
+}
+
+#[derive(Deserialize)]
+pub struct StateQuery {
+    mode: Option<String>,
+}
+
 /// Bridges an mpsc::Receiver<String> into a Stream<Item = Result<Event, Infallible>>.
 struct LogEventStream(mpsc::Receiver<String>);
 
@@ -347,6 +394,99 @@ pub async fn save_config(
             url_encode(&format!("Save failed: {e}"))
         )),
     }
+}
+
+pub async fn api_state(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<StateQuery>,
+) -> Json<AppStateResponse> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let edit_mode = if q.mode.as_deref() == Some("saved") { EditMode::Saved } else { EditMode::Running };
+
+    let (live_text, live_error) = match nft::get_ruleset_annotated() {
+        Ok(t) => (t, None),
+        Err(e) => match nft::get_ruleset_text() {
+            Ok(t) => (t, Some(e.to_string())),
+            Err(e2) => (String::new(), Some(e2.to_string())),
+        },
+    };
+
+    let config = ConfigState {
+        mode: if edit_mode == EditMode::Saved { "saved".into() } else { "running".into() },
+        saved_path: state.config.saved_config_path.clone(),
+    };
+
+    let fw = state.fw.lock().unwrap();
+    let resp = match &*fw {
+        FwState::Idle => {
+            let (edit_text, edit_error) = match edit_mode {
+                EditMode::Running => (live_text.clone(), live_error.clone()),
+                EditMode::Saved => match nft::read_saved_config(&state.config.saved_config_path) {
+                    Ok(t) => (t, None),
+                    Err(e) => (String::new(), Some(e.to_string())),
+                },
+            };
+            let sidebar = SidebarState {
+                interfaces: nft::get_interfaces(),
+                defines: nft::parse_defines(&edit_text)
+                    .into_iter()
+                    .map(|(name, value)| DefineInfo { name, value })
+                    .collect(),
+                sets: nft::parse_sets(&edit_text),
+            };
+            AppStateResponse {
+                phase: "editing".into(),
+                live_text,
+                live_error,
+                edit_text: Some(edit_text),
+                edit_error,
+                staged_text: None,
+                staged_mode: None,
+                previous_text: None,
+                deadline_ms: None,
+                sidebar: Some(sidebar),
+                config,
+            }
+        }
+        FwState::Staged(change) => AppStateResponse {
+            phase: "staged".into(),
+            live_text,
+            live_error,
+            edit_text: None,
+            edit_error: None,
+            staged_text: Some(change.content.clone()),
+            staged_mode: Some(change.mode.to_string()),
+            previous_text: None,
+            deadline_ms: None,
+            sidebar: None,
+            config,
+        },
+        FwState::Promoting { change, previous_text, deadline, .. } => {
+            let now_sys = SystemTime::now();
+            let now_inst = Instant::now();
+            let until_deadline = deadline.saturating_duration_since(now_inst);
+            let deadline_ms = now_sys
+                .checked_add(until_deadline)
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            AppStateResponse {
+                phase: "promoting".into(),
+                live_text,
+                live_error,
+                edit_text: None,
+                edit_error: None,
+                staged_text: Some(change.content.clone()),
+                staged_mode: Some(change.mode.to_string()),
+                previous_text: Some(previous_text.clone()),
+                deadline_ms,
+                sidebar: None,
+                config,
+            }
+        }
+    };
+    drop(fw);
+    Json(resp)
 }
 
 // ---------------------------------------------------------------------------

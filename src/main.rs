@@ -47,6 +47,7 @@ async fn main() {
         .route("/clear", post(routes::clear))
         .route("/validate", post(routes::validate))
         .route("/save-config", post(routes::save_config))
+        .route("/api/state", get(routes::api_state))
         .route("/breakpoint", post(routes::breakpoint_set))
         .route("/breakpoint/{line}", delete(routes::breakpoint_clear))
         .route("/breakpoints", get(routes::breakpoints_list))
