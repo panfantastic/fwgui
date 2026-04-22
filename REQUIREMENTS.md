@@ -296,3 +296,76 @@ Interactive graph visualisation of the running ruleset mapped onto the Linux net
 * Toggle state survives a page reload
 * Navigating to a chain that no longer exists in the config does not produce an error
 
+## v0.10.3 — Frontend/backend separation
+
+The current implementation has too much presentation layer in the backend: HTML, CSS, and
+JavaScript are assembled by string concatenation inside `routes.rs`. This version moves all
+frontend code into a proper Vite project and reduces the Rust backend to a JSON API.
+
+### Phase 1 — Vite project structure
+
+Replace the esbuild build script with a Vite project under `ui/`:
+
+```
+ui/
+  index.html          ← static shell for the main editor page
+  graph.html          ← static shell for the graph page
+  vite.config.js      ← multi-page build (input: { main: index.html, graph: graph.html })
+  src/
+    style.css         ← all CSS extracted from page() in routes.rs
+    diff.js           ← DIFF_JS algorithm extracted from routes.rs
+    nft-language.js   ← nftLanguage StreamLanguage definition (moved from cm-entry.js)
+    cm.js             ← CodeMirror re-exports (replaces cm-entry.js)
+    editor.js         ← editing_script() logic extracted from routes.rs
+    graph.js          ← graph page JS extracted from render_graph_page() / graph-entry.js
+```
+
+* `build.sh` replaced by `cd ui && npm run build` (Vite outputs into `static/`)
+* `package.json` and `node_modules` move into `ui/`
+* No behaviour change in this phase — pages load identically
+
+### Phase 2 — JSON API
+
+Add `GET /api/state` returning the full page state as JSON:
+
+```json
+{
+  "phase": "editing" | "staged" | "promoting",
+  "live_text": "...",
+  "staged_text": "...",
+  "remaining_secs": 30,
+  "messages": [{ "kind": "error" | "notice", "text": "..." }],
+  "sidebar": { "tables": [...], "chains": [...] },
+  "config": { "mode": "running" | "saved", "saved_path": "..." }
+}
+```
+
+Convert existing form-POST endpoints (`/stage`, `/promote`, `/acknowledge`, `/clear`,
+`/save-config`) to return JSON instead of `Redirect`. The JS uses `fetch()` to call
+these endpoints and re-fetches `/api/state` after each mutation.
+
+Existing clean endpoints (`/api/graph/dot`, `/validate`, `/log-stream`) are unchanged.
+
+### Phase 3 — JS renders from API state
+
+* `editor.js` on page load: `fetch('/api/state')` → initialise CodeMirror with `live_text`,
+  render the appropriate view (editing / staged / promoting) based on `phase`
+* All HTML currently assembled by `render_editing()`, `render_staged()`, `render_promoting()`,
+  `render_sidebar()` in Rust is replaced by DOM construction in JS
+* Once the JS rendering covers all states, the Rust `render_*` functions and `page()` /
+  `render_graph_page()` are deleted
+
+### Phase 4 — Build integration
+
+* `build.rs` runs `cd ui && npm run build` so `cargo build` produces a complete deployable
+* A `FWGUI_DEV=1` env var makes Axum skip serving `static/` and proxy asset requests to
+  the Vite dev server on `localhost:5173`, enabling HMR during development
+
+### Validation
+
+* `cargo build` produces a working deployment with no manual build steps
+* Full golden path works end-to-end: edit → stage → promote → countdown → acknowledge/revert
+* Graph page renders and all existing graph interactions work
+* `routes.rs` contains no inline HTML, CSS, or JavaScript string literals
+* `FWGUI_DEV=1 cargo run` + `cd ui && npm run dev` enables live-reload development
+
