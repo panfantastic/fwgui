@@ -63,10 +63,11 @@
                  padding: .4em; margin-top: .4em; font-size: .8em;
                  resize: vertical; min-height: 80px; }
   .log-line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; border-bottom: 1px solid #222; }
-  .bp-marker { color: #c00; cursor: pointer; font-size: 1em; line-height: 1; padding: 0 2px; }
+  .cm-bp-gutter { min-width: 1.4em; }
+  .cm-bp-gutter .cm-gutterElement { cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .cm-bp-gutter .cm-gutterElement:hover::before { content: '○'; color: #aaa; font-size: .85em; }
+  .bp-marker { color: #c00; cursor: pointer; font-size: 1em; line-height: 1; }
   .bp-marker:hover { color: #f00; }
-  .bp-empty-marker { display: inline-block; width: .8em; cursor: pointer; padding: 0 2px; }
-  .bp-empty-marker:hover::after { content: '○'; color: #aaa; }
   .sidebar { border: 1px solid #ddd; border-radius: 3px; background: #fafafa; padding: .5em .75em;
               font-size: .85em; position: sticky; top: 1em; }
   .sidebar h4 { margin: .4em 0 .2em; color: #333; border-bottom: 1px solid #eee;
