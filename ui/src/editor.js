@@ -237,6 +237,10 @@ function buildSidebarHtml(sidebar, withLogGroups) {
 // ---- Editor init (CM6 + forms + monitor) ---------------------------------
 
 function initEditor(editText, liveText, isRunning, isSaved, sidebar) {
+  // Forward refs populated later when monitor setup runs (running mode only).
+  var setBreakpoint   = null;
+  var clearBreakpoint = null;
+
   // --- diff decorations ---
   class DiffDelWidget extends WidgetType {
     toDOM() { var d = document.createElement('div'); d.className = 'cm-diff-del'; return d; }
@@ -397,10 +401,6 @@ function initEditor(editText, liveText, isRunning, isSaved, sidebar) {
         return set;
       }
     });
-
-    // Forward refs so gutter handler can call into monitor logic set up below.
-    var setBreakpoint   = null;
-    var clearBreakpoint = null;
 
     bpGutter = gutter({
       class: 'cm-bp-gutter',
