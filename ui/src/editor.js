@@ -423,6 +423,7 @@ function initEditor(editText, liveText, isRunning, isSaved, sidebar) {
   // --- build extensions list ---
   var extensions = [
     vim(),
+    ...(isRunning ? [bpGutter, bpField] : []),
     basicSetup,
     nftLanguage.extension,
     nftFold,
@@ -432,7 +433,6 @@ function initEditor(editText, liveText, isRunning, isSaved, sidebar) {
     errField,
     EditorView.updateListener.of(update => { if (update.docChanged) updateInlineDiff(update.view); }),
   ];
-  if (isRunning) extensions.push(bpGutter, bpField);
 
   var view = new EditorView({
     state: EditorState.create({ doc: editText, extensions }),
