@@ -27,10 +27,27 @@ fn js_response(body: &'static [u8]) -> Response<axum::body::Body> {
         .unwrap()
 }
 
+fn vite_redirect(path: &str) -> Response<axum::body::Body> {
+    let url = format!("http://localhost:5173{path}");
+    Response::builder()
+        .status(302)
+        .header(header::LOCATION, url)
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+fn dev_mode() -> bool {
+    std::env::var("FWGUI_DEV").is_ok()
+}
+
 async fn serve_index()         -> Response<axum::body::Body> { html_response(INDEX_HTML) }
 async fn serve_graph_page()    -> Response<axum::body::Body> { html_response(GRAPH_HTML) }
-async fn serve_editor_bundle() -> Response<axum::body::Body> { js_response(EDITOR_BUNDLE) }
-async fn serve_graph_bundle()  -> Response<axum::body::Body> { js_response(GRAPH_BUNDLE) }
+async fn serve_editor_bundle() -> Response<axum::body::Body> {
+    if dev_mode() { vite_redirect("/src/editor.js") } else { js_response(EDITOR_BUNDLE) }
+}
+async fn serve_graph_bundle()  -> Response<axum::body::Body> {
+    if dev_mode() { vite_redirect("/src/graph.js") } else { js_response(GRAPH_BUNDLE) }
+}
 
 #[tokio::main]
 async fn main() {
@@ -60,6 +77,9 @@ async fn main() {
         .route("/log-stream", get(routes::log_stream))
         .with_state(app_state);
 
+    if dev_mode() {
+        tracing::warn!("FWGUI_DEV mode — JS bundles proxied to http://localhost:5173 (run: cd ui && npm run dev)");
+    }
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
     tracing::info!("listening on http://0.0.0.0:{port}");
     axum::serve(listener, app).await.unwrap();
