@@ -42,4 +42,4 @@ These outcomes must remain true at all times:
 - **Backend**: Rust/Axum, JSON API — `/api/state` (GET), `/stage` `/promote` `/acknowledge` `/clear` `/save-config` (POST, return `{ok, error?, notice?}`), `/log-stream` (SSE), `/api/graph/dot` (GET)
 - **Frontend**: `ui/src/editor.js` (CodeMirror 6, vim, breakpoints, SSE monitor), `ui/src/graph.js` (Viz.js WASM, panzoom); Vite multi-entry build → `static/editor-bundle.js` + `static/graph-bundle.js` (committed to repo)
 - **Build**: `build.rs` runs Vite automatically; `SKIP_JS_BUILD=1` skips it for deployment machines; `FWGUI_DEV=1` proxies bundle requests to the Vite dev server
-- **Builds on Rust stable** — no nightly features
+- **Language**: Rust stable channel only — nightly features are not used
