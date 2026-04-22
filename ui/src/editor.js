@@ -178,7 +178,8 @@ ${saveBtnHtml}
 ${buildSidebarHtml(sidebar, isRunning)}
 </div>`;
 
-  initEditor(editText, liveText, isRunning, isSaved, sidebar);
+  // In saved mode diff against the saved file itself (not the annotated running config).
+  initEditor(editText, isSaved ? editText : liveText, isRunning, isSaved, sidebar);
 }
 
 function buildSidebarHtml(sidebar, withLogGroups) {

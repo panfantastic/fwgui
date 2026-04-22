@@ -92,7 +92,7 @@ ${b}<h2>${y}</h2>
 ${g}
 </div>
 ${v1(s,t)}
-</div>`,y1(i,r,t,e)}function v1(n,e){if(!n)return"";var t=`<aside class="sidebar">
+</div>`,y1(i,e?i:r,t,e)}function v1(n,e){if(!n)return"";var t=`<aside class="sidebar">
 `;if(t+=`<h4>Interfaces</h4><ul>
 `,!n.interfaces.length)t+=`<li class="sb-empty">None found</li>
 `;else for(var i=0;i<n.interfaces.length;i++){var r=n.interfaces[i];t+='<li><button type="button" class="sb-item" data-insert="'+Ue('"'+r+'"')+'">'+Ue(r)+`</button></li>
