@@ -19,11 +19,14 @@ fn main() {
 
     let ui = "ui";
 
-    let status = Command::new("npm")
+    let Ok(status) = Command::new("npm")
         .args(["install", "--user-agent", "fwgui-build"])
         .current_dir(ui)
         .status()
-        .expect("build.rs: npm not found — install Node.js to build JS assets");
+    else {
+        println!("cargo:warning=npm not found — using committed JS bundles");
+        return;
+    };
     assert!(status.success(), "build.rs: npm install failed");
 
     let status = Command::new("npm")
