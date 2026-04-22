@@ -1,40 +1,45 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project
 
-`fwgui` is a Rust/Axum web UI for managing nftables firewall rulesets. It is safety-critical — changes to the firewall can lock out the operator, so the rollback mechanism (promote → acknowledge or auto-revert) must be treated as a hard correctness requirement, not an optional feature.
+`fwgui` is a Rust/Axum web UI for managing nftables firewall rulesets.
 
 ## Build & Development
 
 ```bash
-cargo build               # compile
-cargo run                 # run dev server
-cargo test                # all tests
-cargo test <test_name>    # single test
-cargo clippy              # lint
-cargo fmt                 # format
+cargo build                              # compile (runs npm/vite via build.rs)
+SKIP_JS_BUILD=1 cargo build              # skip JS build (bundles are committed)
+cargo run                                # run server
+FWGUI_DEV=1 SKIP_JS_BUILD=1 cargo run   # dev mode: JS proxied to Vite at localhost:5173
+cd ui && npm run dev                     # Vite HMR (used alongside FWGUI_DEV)
+cargo test                               # all tests
+cargo clippy                             # lint
+cargo fmt                                # format
 ```
 
-Rust stable channel only — do not use nightly features.
+## Implemented (v0.1–v0.10.3)
 
-## v0.1 Scope
+- Running config mode: live ruleset visible and editable, vim keybindings, stage/promote/rollback with countdown
+- Saved config mode: loads/saves `/etc/nftables.conf`; incremental per-table staging; rollback never writes to disk
+- Syntax validation with error-line highlighting; code folding; nftables syntax highlighting
+- Sidebar: lists interfaces, variables, and IP sets defined in the ruleset
+- Breakpoints: gutter-click injects log rules into the live ruleset; SSE streams matching kernel log lines to the browser
+- Graph view: Graphviz DOT rendered via WASM, shows netfilter traversal for all address families; chains are clickable and deep-link to the editor
+- Frontend/backend separation: Rust serves a JSON API; all HTML/CSS/JS lives in `ui/src/`; Vite bundles via `build.rs`
 
-- Display current running nftables ruleset in the browser
-- Stage a ruleset change with nftables syntax validation before applying
-- Promote a staged change to the live ruleset
-- Auto-rollback: if a promoted change is not acknowledged within a timeout, revert to the previous ruleset automatically
+## Safety invariants
 
-## Architecture (intended)
+These outcomes must remain true at all times:
 
-- **Axum** HTTP server as the entry point
-- **nftables integration** via system calls / nft CLI or libnftables bindings — read current ruleset, validate syntax, apply changes, and revert
-- **Rollback mechanism**: after promoting a change, start a countdown timer; if the operator doesn't confirm within the window, restore the prior ruleset
-- **Packet traversal analyser**: planned feature to simulate what a crafted packet would match in the active ruleset
+- A promoted change that is not acknowledged within the timeout always reverts to the prior ruleset
+- Rollback in saved config mode never writes to disk — only an explicit acknowledge does
+- Breakpoints are ephemeral: never written to saved config or `/etc/nftables.conf`
+- A failed breakpoint clear leaves server state unchanged so it can be retried
+- nft commands fail explicitly; errors surface to the operator
 
-## Key Constraints
+## Architecture
 
-- nftables is the only supported firewall backend
-- The rollback acknowledgement flow is a safety invariant — never bypass or make it optional
-- Prefer explicit error handling over panics; firewall operations must fail safely
+- **Backend**: Rust/Axum, JSON API — `/api/state` (GET), `/stage` `/promote` `/acknowledge` `/clear` `/save-config` (POST, return `{ok, error?, notice?}`), `/log-stream` (SSE), `/api/graph/dot` (GET)
+- **Frontend**: `ui/src/editor.js` (CodeMirror 6, vim, breakpoints, SSE monitor), `ui/src/graph.js` (Viz.js WASM, panzoom); Vite multi-entry build → `static/editor-bundle.js` + `static/graph-bundle.js` (committed to repo)
+- **Build**: `build.rs` runs Vite automatically; `SKIP_JS_BUILD=1` skips it for deployment machines; `FWGUI_DEV=1` proxies bundle requests to the Vite dev server
+- **Builds on Rust stable** — no nightly features
